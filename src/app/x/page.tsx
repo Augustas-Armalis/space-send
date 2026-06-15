@@ -18,6 +18,7 @@ import { SignalBars } from "@/components/ui/SignalBars";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ContlesMark } from "@/components/brand/ContlesMark";
 import { BeamReceiver } from "@/transfer/beam";
+import { HAS_CLOUD_SIGNALING } from "@/transfer/signaling";
 import type { BeamManifest } from "@/transfer/types";
 import { shortId } from "@/lib/ids";
 import { useUI } from "@/store/ui";
@@ -139,10 +140,18 @@ function BeamRecipientInner() {
 
   /* ---- Error states ---- */
   if (status === "offline") {
+    // Distinguish "no signaling worker configured" from "host actually offline".
+    // Without HAS_CLOUD_SIGNALING the recipient can only reach a sender in the
+    // same browser via BroadcastChannel, so an open-from-another-device fails
+    // here every time — and that's a config issue, not the sender's fault.
+    const title = HAS_CLOUD_SIGNALING ? COPY.hostOfflineTitle : "Cross-device Beam not configured";
+    const sub = HAS_CLOUD_SIGNALING
+      ? COPY.hostOfflineSub
+      : "This site was built without a NEXT_PUBLIC_SIGNAL_URL, so Beams only reach tabs in the same browser. Use Drop for cross-device transfers, or set the secret and redeploy.";
     return (
       <RecipientFrame>
         <div className="grid min-h-[55vh] place-items-center">
-          <EmptyState title={COPY.hostOfflineTitle} sub={COPY.hostOfflineSub} />
+          <EmptyState title={title} sub={sub} />
         </div>
         <div className="flex justify-center">
           <ContlesMark />

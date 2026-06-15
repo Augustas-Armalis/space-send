@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -49,6 +49,7 @@ function DropRecipientInner() {
   const localDrop = useMemo(() => drops.find((d) => d.id === id && !d.trashedAt), [drops, id]);
   const [remoteDrop, setRemoteDrop] = useState<DropRecord | null>(null);
   const [fetchingManifest, setFetchingManifest] = useState(false);
+  const triedRemoteRef = useRef(false);
   const drop = localDrop ?? remoteDrop;
 
   const [phase, setPhase] = useState<Phase>("ready");
@@ -63,15 +64,17 @@ function DropRecipientInner() {
     }
   }, [drop]);
 
-  // If we don't have this Drop locally, try the cloud manifest.
+  // If we don't have this Drop locally, try the cloud manifest exactly once.
+  // We track the attempt with a ref so a null result (drop not in R2) doesn't
+  // trigger a refetch loop.
   useEffect(() => {
-    if (!hydrated || !id || localDrop || remoteDrop || fetchingManifest) return;
+    if (!hydrated || !id || localDrop || triedRemoteRef.current) return;
+    triedRemoteRef.current = true;
     setFetchingManifest(true);
-    fetchManifest(id).then((m) => {
-      setRemoteDrop(m);
-      setFetchingManifest(false);
-    });
-  }, [hydrated, id, localDrop, remoteDrop, fetchingManifest]);
+    fetchManifest(id)
+      .then((m) => setRemoteDrop(m))
+      .finally(() => setFetchingManifest(false));
+  }, [hydrated, id, localDrop]);
 
   if (!hydrated || fetchingManifest) {
     return (

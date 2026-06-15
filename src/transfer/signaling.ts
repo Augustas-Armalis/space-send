@@ -90,6 +90,13 @@ class WebSocketSignaling implements Signaling {
   }
 }
 
+/** True when this build was given a Worker URL — i.e. cross-device Beams are
+ *  expected to work. When false, signaling is BroadcastChannel-only, which only
+ *  reaches other tabs in the same browser. The UI can use this to give the
+ *  recipient an accurate "this site isn't configured for cross-device Beams"
+ *  message instead of a confusing "host is offline". */
+export const HAS_CLOUD_SIGNALING: boolean = !!process.env.NEXT_PUBLIC_SIGNAL_URL;
+
 export function createSignaling(beamId: string, selfId: string): Signaling {
   const url = process.env.NEXT_PUBLIC_SIGNAL_URL;
   if (url && typeof WebSocket !== "undefined") {
