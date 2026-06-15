@@ -183,16 +183,16 @@ export function useSend() {
     setAurora(false);
     fireComplete();
     } catch (e) {
-      // Don't leave the user trapped on the "working" screen. Log the real
-      // reason, mark any in-progress files as failed, and drop back to compose
-      // so they can try again.
+      // Surface the real error in the working indicator and stop. We don't
+      // auto-revert to compose because that flicker reads as "the share screen
+      // appeared and then vanished" — the user was bouncing on a transient
+      // failure they couldn't see. Now they see "Failed — <reason>" and the
+      // composer keeps their files so they can retry.
       console.error("[Space Send] Drop failed:", e);
       const msg = e instanceof Error ? e.message : String(e);
       setWorking({ label: `Failed — ${msg.slice(0, 80)}`, progress: 0 });
       files.forEach((f) => patchFile(f.meta.id, { state: "failed" }));
       setAurora(false);
-      // Auto-return to compose after a beat so the user can retry.
-      setTimeout(() => setPhase("compose"), 2500);
     }
   }, [files, expiry, message, totalSize, options, stash.settings.defaultBackend, stash.tag, stash.name, stash.avatar, addDrop, addTrail, patchFile, setAurora, fireComplete]);
 

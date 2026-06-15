@@ -19,6 +19,7 @@ import { purgeDrop } from "@/transfer/drop";
 import { formatBytes, formatRelative, formatCountdown, pluralize } from "@/lib/format";
 import { fileIcon } from "@/lib/files";
 import { dropLink } from "@/lib/site";
+import { CLOUD_ORIGIN, HAS_CLOUD } from "@/lib/config";
 import { cn } from "@/lib/cn";
 import { fadeUp, stagger, spring } from "@/lib/motion";
 
@@ -277,9 +278,32 @@ export default function VaultPage() {
   const [origin, setOrigin] = useState("");
   const [cleanupDismissed, setCleanupDismissed] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
+  // Live R2 usage — pulled from the Worker's /usage endpoint so the user sees
+  // the bucket-wide footprint (not just their local Drops), refreshed on focus.
+  const [cloud, setCloud] = useState<{ bytes: number; max: number; drops: number } | null>(null);
 
   useEffect(() => {
     setOrigin(window.location.origin);
+  }, []);
+
+  useEffect(() => {
+    if (!HAS_CLOUD) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const res = await fetch(`${CLOUD_ORIGIN}/usage`, { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setCloud({ bytes: data.bytes ?? 0, max: data.max ?? 0, drops: data.drops ?? 0 });
+      } catch {
+        /* offline — keep last value */
+      }
+    };
+    refresh();
+    const onFocus = () => refresh();
+    window.addEventListener("focus", onFocus);
+    const t = setInterval(refresh, 30_000);
+    return () => { cancelled = true; window.removeEventListener("focus", onFocus); clearInterval(t); };
   }, []);
 
   const active = useMemo(() => drops.filter((d) => !d.trashedAt), [drops]);
@@ -419,6 +443,21 @@ export default function VaultPage() {
                   {formatBytes(QUOTA - usedBytes)} free in orbit
                 </span>
               </div>
+
+              {/* Live R2 footprint — what's actually sitting in Cloudflare. */}
+              {cloud && (
+                <div className="mt-3 inline-flex items-center gap-2 rounded-xl border border-white/8 bg-white/[0.02] px-3 py-1.5">
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#00ff88] opacity-60" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[#00ff88]" />
+                  </span>
+                  <span className="mono text-[11px] text-fg-2">
+                    R2: <span className="text-fg">{formatBytes(cloud.bytes)}</span>
+                    <span className="text-fg-3"> / {formatBytes(cloud.max)}</span>
+                    <span className="ml-2 text-fg-3">· {cloud.drops} {pluralize(cloud.drops, "drop")}</span>
+                  </span>
+                </div>
+              )}
 
               <AnimatePresence>
                 {(approaching || nearFull) && (

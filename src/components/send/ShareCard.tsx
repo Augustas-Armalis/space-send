@@ -54,16 +54,30 @@ export function ShareCard({ s }: { s: Controller }) {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center text-center">
+      {/* Beam: distinct "you're broadcasting" badge so the host knows their
+          device is the signal tower right now. */}
+      {isBeam && (
+        <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-[#00c8ff]/25 bg-[#00c8ff]/[0.08] px-3 py-1">
+          <span className="relative flex h-1.5 w-1.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#00c8ff] opacity-70" />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[#00c8ff]" />
+          </span>
+          <span className="mono text-[10px] uppercase tracking-wider text-[#00c8ff]">Broadcasting · keep this tab open</span>
+        </div>
+      )}
+
       {/* Orb crystallizes here */}
       <motion.div layoutId="send-orb" className="mb-5">
         <Orb size={96} state={isBeam ? "waiting" : "complete"} intensity={0.6} />
       </motion.div>
 
       <h2 className="text-xl font-medium tracking-tight text-fg">
-        {isBeam ? COPY.staged : COPY.transmissionReady}
+        {isBeam ? "You are the signal tower" : COPY.transmissionReady}
       </h2>
       <p className="mt-1.5 max-w-xs text-balance text-sm text-fg-3">
-        {isBeam ? COPY.stagedSub : COPY.transmissionReadySub}
+        {isBeam
+          ? "Anyone who opens this link connects to your device and starts downloading automatically."
+          : COPY.transmissionReadySub}
       </p>
 
       {/* Link block */}
@@ -166,6 +180,29 @@ function BeamLivePanel({
 
       {/* Transmit load meter — how hard this device is working as the tower */}
       <LoadMeter load={stats.load} aggSpeed={s.aggregateSpeed} bufferedBytes={stats.bufferedBytes} />
+
+      {/* What's being broadcast — gives the host a quick read on which files
+          are going out without having to scroll back up. */}
+      {s.files.length > 0 && (
+        <div className="rounded-xl border border-white/8 bg-white/[0.02] px-3 py-2.5">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="eyebrow">Broadcasting</span>
+            <span className="mono text-[10px] text-fg-3">{s.files.length} · {formatBytes(s.totalSize)}</span>
+          </div>
+          <ul className="space-y-1">
+            {s.files.slice(0, 3).map((f) => (
+              <li key={f.meta.id} className="flex items-center gap-2 text-[12px] text-fg-2">
+                <Icon name="FileIcon" className="h-3 w-3 shrink-0 text-fg-3" />
+                <span className="truncate">{f.meta.name}</span>
+                <span className="mono ml-auto text-[10px] text-fg-3">{formatBytes(f.meta.size)}</span>
+              </li>
+            ))}
+            {s.files.length > 3 && (
+              <li className="text-[11px] text-fg-3">+ {s.files.length - 3} more</li>
+            )}
+          </ul>
+        </div>
+      )}
 
       {/* Vector visualization */}
       <BeamVector senderSeed={senderSeed} senderName={senderName} senderAvatar={senderAvatar} recipients={recipients} active={s.aggregateSpeed > 0} />
