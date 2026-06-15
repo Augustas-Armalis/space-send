@@ -15,6 +15,7 @@ import { CopyButton } from "@/components/ui/CopyButton";
 import { toast } from "@/components/ui/Toast";
 import { useTransfers, QUOTA } from "@/store/transfers";
 import type { DropRecord } from "@/transfer/types";
+import { purgeDrop } from "@/transfer/drop";
 import { formatBytes, formatRelative, formatCountdown, pluralize } from "@/lib/format";
 import { fileIcon } from "@/lib/files";
 import { dropLink } from "@/lib/site";
@@ -583,8 +584,13 @@ export default function VaultPage() {
                           size="icon-sm"
                           title="Delete permanently"
                           onClick={() => {
+                            // Fire-and-forget the cloud purge first so the
+                            // bytes leave R2 and free up our quota — we don't
+                            // await it because the local UI removal should be
+                            // instant.
+                            void purgeDrop(drop.id);
                             removeDrop(drop.id);
-                            toast.warning("Deleted", "This Drop is gone for good.");
+                            toast.warning("Deleted", "Files purged from storage.");
                           }}
                         >
                           <Icon name="X" className="h-4 w-4" />
