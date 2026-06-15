@@ -48,6 +48,8 @@ function Tower() {
   const startedAt = useTower((s) => s.startedAt);
   const addFiles = useTower((s) => s.addFiles);
   const setThrottle = useTower((s) => s.setThrottle);
+  const setTurbo = useTower((s) => s.setTurbo);
+  const turbo = useTower((s) => s.turbo);
   const kill = useTower((s) => s.kill);
   const { name, tag, avatar } = useStash();
 
@@ -209,6 +211,35 @@ function Tower() {
             </div>
           </GlassPanel>
 
+          {/* Overdrive */}
+          <GlassPanel className="p-5 sm:p-6">
+            <button
+              onClick={() => setTurbo(!turbo)}
+              className={cnTurbo(turbo)}
+            >
+              <div className="text-left">
+                <p className="inline-flex items-center gap-1.5 text-sm font-medium text-fg">
+                  <Icon name="Zap" className="h-4 w-4 text-[#00ff88]" /> Overdrive
+                </p>
+                <p className="mt-0.5 text-[11px] text-fg-3">Use more memory + CPU to push max throughput.</p>
+              </div>
+              <span
+                className={[
+                  "relative h-6 w-11 shrink-0 rounded-full border transition-colors",
+                  turbo ? "border-transparent bg-[#00ff88]/80" : "border-white/10 bg-white/[0.06]",
+                ].join(" ")}
+              >
+                <span
+                  className="absolute top-0.5 h-[18px] w-[18px] rounded-full bg-white transition-all"
+                  style={{ left: turbo ? 22 : 2 }}
+                />
+              </span>
+            </button>
+            <p className="mt-2 text-[11px] text-fg-3">
+              {turbo ? "On — biggest chunks + 256 MB in-flight buffer. Best on fast/local networks." : "Off — balanced, low-memory streaming."}
+            </p>
+          </GlassPanel>
+
           {/* Bitrate control */}
           <GlassPanel className="p-5 sm:p-6">
             <p className="eyebrow mb-3 inline-flex items-center gap-1.5">
@@ -245,6 +276,13 @@ function Tower() {
       </div>
     </Page>
   );
+}
+
+function cnTurbo(on: boolean): string {
+  return [
+    "flex w-full items-center justify-between gap-3 rounded-xl border px-3 py-2.5 transition-colors",
+    on ? "border-[#00ff88]/30 bg-[#00ff88]/[0.06]" : "border-white/8 bg-white/[0.02] hover:border-white/15",
+  ].join(" ");
 }
 
 function Stat({ label, value, accent, pulse }: { label: string; value: number; accent: string; pulse?: boolean }) {

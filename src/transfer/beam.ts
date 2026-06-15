@@ -26,6 +26,15 @@ const LOW_WATER = 16 * 1024 * 1024;    // resume once it drains under 16 MB
 const READ_BLOCK = 16 * 1024 * 1024;   // read the file 16 MB at a time
 const STREAM_TO_DISK_MIN = 64 * 1024 * 1024; // use the save-picker for files ≥ 64 MB
 
+// Overdrive ("turbo"): spend more RAM/CPU to keep the pipe maximally saturated.
+// Bigger in-flight buffer + bigger reads + the largest chunk the SCTP transport
+// allows (Firefox negotiates large maxMessageSize, so it can send 1 MB chunks;
+// Chrome stays clamped to its 256 KB ceiling automatically). Best on fast/local
+// links where JS pumping, not the network, is the bottleneck.
+const TURBO_CHUNK = 1024 * 1024;            // 1 MB target (clamped to maxMessageSize)
+const TURBO_HIGH_WATER = 256 * 1024 * 1024; // up to 256 MB buffered
+const TURBO_READ_BLOCK = 64 * 1024 * 1024;  // read 64 MB at a time
+
 export interface HostFile {
   meta: FileMeta;
   file: File;
@@ -76,6 +85,7 @@ export class BeamHost {
   private sig: Signaling;
   private peers = new Map<string, PeerState>();
   private throttle = 0;
+  private turbo = false;
   private closed = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -107,6 +117,11 @@ export class BeamHost {
 
   fileCount() {
     return this.files.length;
+  }
+
+  /** Overdrive: spend more memory/CPU to push max throughput. */
+  setTurbo(on: boolean) {
+    this.turbo = on;
   }
 
   setThrottle(bytesPerSec: number) {
@@ -234,9 +249,13 @@ export class BeamHost {
     const channel = p.channel;
     channel.bufferedAmountLowThreshold = LOW_WATER;
     // Send the largest message the SCTP transport allows (clamped to our
-    // target). Bigger messages = far less per-chunk overhead.
+    // target). Bigger messages = far less per-chunk overhead. Overdrive raises
+    // the in-flight buffer, the read-block size, and the chunk target.
     const maxMsg = (p.pc.sctp?.maxMessageSize as number | undefined) || TARGET_CHUNK;
-    const chunkSize = Math.max(16 * 1024, Math.min(TARGET_CHUNK, maxMsg));
+    const chunkTarget = this.turbo ? TURBO_CHUNK : TARGET_CHUNK;
+    const highWater = this.turbo ? TURBO_HIGH_WATER : HIGH_WATER;
+    const readBlock = this.turbo ? TURBO_READ_BLOCK : READ_BLOCK;
+    const chunkSize = Math.max(16 * 1024, Math.min(chunkTarget, maxMsg));
     const wanted = this.files.filter((f) => fileIds.includes(f.meta.id));
 
     for (const { meta, file } of wanted) {
@@ -249,12 +268,12 @@ export class BeamHost {
       // that in-memory block with no per-chunk await for disk I/O.
       while (offset < file.size) {
         if (this.closed || channel.readyState !== "open") return;
-        const block = await file.slice(offset, Math.min(offset + READ_BLOCK, file.size)).arrayBuffer();
+        const block = await file.slice(offset, Math.min(offset + readBlock, file.size)).arrayBuffer();
         let bp = 0;
         while (bp < block.byteLength) {
           if (this.closed || channel.readyState !== "open") return;
           const buf = block.slice(bp, Math.min(bp + chunkSize, block.byteLength));
-          if (channel.bufferedAmount > HIGH_WATER) await this.waitDrain(channel);
+          if (channel.bufferedAmount > highWater) await this.waitDrain(channel);
           if (this.throttle > 0) {
             sentSinceThrottle += buf.byteLength;
             const elapsed = (Date.now() - lastThrottleTs) / 1000;

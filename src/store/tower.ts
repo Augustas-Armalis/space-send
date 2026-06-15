@@ -26,6 +26,7 @@ interface TowerState {
   stats: BeamHostStats;
   aggSpeed: number;
   startedAt: number;
+  turbo: boolean;
 
   launch: (p: { id: string; shareUrl: string; host: BeamHost; files: FileMeta[]; startedAt: number }) => void;
   addRecipient: (r: BeamRecipient) => void;
@@ -35,6 +36,7 @@ interface TowerState {
   setAggSpeed: (v: number) => void;
   addFiles: (incoming: FileList | File[]) => void;
   setThrottle: (bytesPerSec: number) => void;
+  setTurbo: (on: boolean) => void;
   kill: () => void;
 }
 
@@ -48,6 +50,7 @@ export const useTower = create<TowerState>((set, get) => ({
   stats: EMPTY_STATS,
   aggSpeed: 0,
   startedAt: 0,
+  turbo: false,
 
   launch: ({ id, shareUrl, host, files, startedAt }) =>
     set({
@@ -60,6 +63,7 @@ export const useTower = create<TowerState>((set, get) => ({
       stats: EMPTY_STATS,
       aggSpeed: 0,
       startedAt,
+      turbo: false,
     }),
 
   addRecipient: (r) =>
@@ -81,6 +85,10 @@ export const useTower = create<TowerState>((set, get) => ({
   },
 
   setThrottle: (bytesPerSec) => get().host?.setThrottle(bytesPerSec),
+  setTurbo: (on) => {
+    get().host?.setTurbo(on);
+    set({ turbo: on });
+  },
 
   kill: () => {
     try {
