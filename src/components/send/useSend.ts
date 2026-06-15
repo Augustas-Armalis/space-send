@@ -47,7 +47,7 @@ export function useSend() {
   const [hostStats, setHostStats] = useState<BeamHostStats>({
     connected: 0, active: 0, completed: 0, aggSpeed: 0, bufferedBytes: 0, load: 0,
   });
-  const [working, setWorking] = useState<{ label: string; progress: number }>({ label: "", progress: 0 });
+  const [working, setWorking] = useState<{ label: string; progress: number; speed?: number; sub?: string; failed?: boolean }>({ label: "", progress: 0 });
 
   const hostRef = useRef<BeamHost | null>(null);
   const selfId = useRef<string>(shortId());
@@ -109,13 +109,16 @@ export function useSend() {
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
       patchFile(f.meta.id, { state: "uploading" });
-      setWorking({ label: `Dropping ${f.meta.name}`, progress: priorBytes / Math.max(1, grandTotal) });
+      const fileLabel = files.length > 1 ? `${f.meta.name}  ·  ${i + 1}/${files.length}` : f.meta.name;
+      setWorking({ label: fileLabel, progress: priorBytes / Math.max(1, grandTotal), speed: 0, sub: "Uploading" });
       await uploadFile(id, f.meta, f.file, (p) => {
         const fileFrac = p.loaded / p.total;
         patchFile(f.meta.id, { progress: fileFrac, speed: p.speed });
         setWorking({
-          label: `Dropping ${f.meta.name}`,
+          label: fileLabel,
           progress: (priorBytes + p.loaded) / Math.max(1, grandTotal),
+          speed: p.speed,
+          sub: "Uploading",
         });
         setAurora(true, intensityFromSpeed(p.speed));
       });
@@ -157,7 +160,7 @@ export function useSend() {
     // Drops — if it fails after retries, we throw and surface the error
     // instead of giving the user a share link that only works for themselves.
     if (hasCloud()) {
-      setWorking({ label: "Finalizing — publishing manifest", progress: 1 });
+      setWorking({ label: "Finalizing", progress: 1, sub: "Publishing link" });
       await putManifest(record);
     }
     addTrail({
@@ -184,7 +187,7 @@ export function useSend() {
       // composer keeps their files so they can retry.
       console.error("[Space Send] Drop failed:", e);
       const msg = e instanceof Error ? e.message : String(e);
-      setWorking({ label: `Failed — ${msg.slice(0, 80)}`, progress: 0 });
+      setWorking({ label: "Upload failed", progress: 0, sub: msg.slice(0, 90), failed: true });
       files.forEach((f) => patchFile(f.meta.id, { state: "failed" }));
       setAurora(false);
     }

@@ -43,8 +43,8 @@ const MB = 1024 * KB;
 const GB = 1024 * MB;
 
 const BUCKET_LIMIT_BYTES = 9 * GB;   // 9 GB — 1 GB margin under R2's 10 GB free tier
-const MAX_FILE_BYTES = 95 * MB;      // per file (Workers free body limit is ~100 MB)
-const MAX_DROP_BYTES = 2 * GB;       // per Drop
+const MAX_FILE_BYTES = 95 * MB;      // per single-PUT file (Workers free body limit ~100 MB)
+const MAX_DROP_BYTES = 4 * GB;       // per Drop (large files go via multipart, in 90 MB parts)
 const MAX_MANIFEST_BYTES = 512 * KB;
 
 const USAGE_KEY = "global";
@@ -109,12 +109,74 @@ export default {
     }
 
     // ---- Drop file bytes ----
+    // ---- Drop file: R2 multipart upload (for large files / videos) ----
+    // create:   POST /drop/<id>/file/<fid>/mpu       (x-total-size, x-file-name)
+    // part:     PUT  /drop/<id>/file/<fid>/mpu/<uploadId>/<partNo>
+    // complete: POST /drop/<id>/file/<fid>/mpu/<uploadId>/complete  body {parts}
+    // abort:    DELETE /drop/<id>/file/<fid>/mpu/<uploadId>
+    const mpuCreate = url.pathname.match(/^\/drop\/([A-Za-z0-9_-]+)\/file\/([A-Za-z0-9_-]+)\/mpu$/);
+    if (mpuCreate && request.method === "POST") {
+      const [, dropId, fileId] = mpuCreate;
+      const key = `blob/${dropId}/${fileId}`;
+      const total = Number(request.headers.get("x-total-size") || "0");
+      if (total > MAX_DROP_BYTES) return cors(jsonResp({ error: "file_too_large", max: MAX_DROP_BYTES }, 413));
+      // Reserve the whole declared size up front so concurrent uploads respect the cap.
+      const usage = env.USAGE.get(env.USAGE.idFromName(USAGE_KEY));
+      const reserve = await usage.fetch("https://usage/reserve", { method: "POST", body: JSON.stringify({ dropId, fileId, bytes: total }) });
+      if (reserve.status !== 200) return cors(new Response(await reserve.text(), { status: reserve.status, headers: { "content-type": "application/json" } }));
+      const mpu = await env.DROPS.createMultipartUpload(key, {
+        httpMetadata: { contentType: request.headers.get("x-content-type") || "application/octet-stream" },
+        customMetadata: { name: decodeURIComponent(request.headers.get("x-file-name") || fileId) },
+      });
+      return cors(jsonResp({ uploadId: mpu.uploadId }, 200));
+    }
+    const mpuPart = url.pathname.match(/^\/drop\/([A-Za-z0-9_-]+)\/file\/([A-Za-z0-9_-]+)\/mpu\/([^/]+)\/(\d+)$/);
+    if (mpuPart && request.method === "PUT") {
+      const [, dropId, fileId, uploadId, partNo] = mpuPart;
+      const key = `blob/${dropId}/${fileId}`;
+      if (!request.body) return cors(new Response("No body", { status: 400 }));
+      const mpu = env.DROPS.resumeMultipartUpload(key, uploadId);
+      const part = await mpu.uploadPart(Number(partNo), request.body);
+      return cors(jsonResp({ partNumber: part.partNumber, etag: part.etag }, 200));
+    }
+    const mpuComplete = url.pathname.match(/^\/drop\/([A-Za-z0-9_-]+)\/file\/([A-Za-z0-9_-]+)\/mpu\/([^/]+)\/complete$/);
+    if (mpuComplete && request.method === "POST") {
+      const [, dropId, fileId, uploadId] = mpuComplete;
+      const key = `blob/${dropId}/${fileId}`;
+      const { parts } = await request.json<{ parts: { partNumber: number; etag: string }[] }>();
+      const mpu = env.DROPS.resumeMultipartUpload(key, uploadId);
+      await mpu.complete(parts);
+      return cors(jsonResp({ ok: true }, 200));
+    }
+    const mpuAbort = url.pathname.match(/^\/drop\/([A-Za-z0-9_-]+)\/file\/([A-Za-z0-9_-]+)\/mpu\/([^/]+)$/);
+    if (mpuAbort && request.method === "DELETE") {
+      const [, dropId, fileId, uploadId] = mpuAbort;
+      const key = `blob/${dropId}/${fileId}`;
+      try {
+        const mpu = env.DROPS.resumeMultipartUpload(key, uploadId);
+        await mpu.abort();
+      } catch {
+        /* already gone */
+      }
+      const head = await env.DROPS.head(key).catch(() => null);
+      // Release whatever we reserved (best effort — we don't know the exact size here, so caller passes it).
+      const total = Number(url.searchParams.get("size") || head?.size || "0");
+      if (total) {
+        const usage = env.USAGE.get(env.USAGE.idFromName(USAGE_KEY));
+        await usage.fetch("https://usage/release", { method: "POST", body: JSON.stringify({ dropId, fileId, bytes: total }) });
+      }
+      return cors(jsonResp({ ok: true }, 200));
+    }
+
     const fileMatch = url.pathname.match(/^\/drop\/([A-Za-z0-9_-]+)\/file\/([A-Za-z0-9_-]+)$/);
     if (fileMatch) {
       const [, dropId, fileId] = fileMatch;
       const key = `blob/${dropId}/${fileId}`;
-      if (request.method === "PUT") return cors(await storeBlob(env, key, dropId, fileId, request));
-      if (request.method === "GET") return cors(await readBlob(env, key));
+      if (request.method === "PUT") return cors(await storeBlob(env, key, dropId, fileId, request, {
+        name: decodeURIComponent(request.headers.get("x-file-name") || fileId),
+        mime: request.headers.get("x-content-type") || "application/octet-stream",
+      }));
+      if (request.method === "GET") return cors(await readBlob(env, key, true));
       return cors(new Response("Method not allowed", { status: 405 }));
     }
 
@@ -176,7 +238,7 @@ export default {
         };
         return cors(await storeBlob(env, key, poolId, fileId, request, meta));
       }
-      if (request.method === "GET") return cors(await readBlob(env, key));
+      if (request.method === "GET") return cors(await readBlob(env, key, true));
       if (request.method === "DELETE") {
         const head = await env.DROPS.head(key);
         await env.DROPS.delete(key);
@@ -230,12 +292,19 @@ async function storeBlob(
   return jsonResp({ ok: true }, 200);
 }
 
-async function readBlob(env: Env, key: string): Promise<Response> {
+async function readBlob(env: Env, key: string, forceDownload = false): Promise<Response> {
   const obj = await env.DROPS.get(key);
   if (!obj) return new Response("Not found", { status: 404 });
   const headers = new Headers();
   headers.set("content-type", obj.httpMetadata?.contentType || "application/octet-stream");
   if (obj.size) headers.set("content-length", String(obj.size));
+  // Force a real download instead of letting the browser render images/videos
+  // inline. The download attribute alone doesn't work cross-origin, so the
+  // server must say "attachment".
+  if (forceDownload) {
+    const name = (obj.customMetadata?.name || key.split("/").pop() || "file").replace(/["\\\r\n]/g, "_");
+    headers.set("content-disposition", `attachment; filename="${name}"`);
+  }
   return new Response(obj.body, { headers });
 }
 

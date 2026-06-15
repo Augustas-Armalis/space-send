@@ -19,6 +19,10 @@ export interface UploadProgress {
 }
 
 const READ_CHUNK = 4 * 1024 * 1024;
+// Files at/above this go through R2 multipart (90 MB parts) so they don't hit
+// the Worker's ~100 MB single-request body limit. Smaller files use one PUT.
+const MULTIPART_THRESHOLD = 90 * 1024 * 1024;
+const PART_SIZE = 90 * 1024 * 1024;
 
 /** Upload one file's bytes to the active backend with genuine read progress. */
 export async function uploadFile(
@@ -30,7 +34,11 @@ export async function uploadFile(
   const total = file.size;
 
   if (hasCloud()) {
-    await uploadToCloud(dropId, meta, file, onProgress);
+    if (file.size >= MULTIPART_THRESHOLD) {
+      await uploadMultipart(dropId, meta, file, onProgress);
+    } else {
+      await uploadToCloud(dropId, meta, file, onProgress);
+    }
     onProgress?.({ fileId: meta.id, loaded: total, total, speed: 0 });
     return;
   }
@@ -61,7 +69,7 @@ export async function uploadFile(
   onProgress?.({ fileId: meta.id, loaded: total, total, speed });
 }
 
-/** Cloud upload via XMLHttpRequest to get real upload progress events. */
+/** Single-PUT cloud upload via XMLHttpRequest for real upload progress. */
 function uploadToCloud(
   dropId: string,
   meta: FileMeta,
@@ -72,13 +80,12 @@ function uploadToCloud(
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", dropFileUrl(dropId, meta.id));
     xhr.setRequestHeader("x-content-type", meta.mime || "application/octet-stream");
-    // Hard ceiling — if the request hangs (CORS preflight wedge, server stall),
-    // we want to fail loud instead of leaving the UI stuck "at 100%" forever.
-    xhr.timeout = 60_000;
-    const started = Date.now();
+    xhr.setRequestHeader("x-file-name", encodeURIComponent(meta.name));
+    // Scale the timeout to file size (assume a pessimistic ~0.5 MB/s floor) so
+    // a slow connection on a big-ish file doesn't get killed mid-flight.
+    xhr.timeout = Math.max(60_000, (file.size / (0.5 * 1024 * 1024)) * 1000);
     let lastLoaded = 0;
-    let lastTime = started;
-    let reachedFull = false;
+    let lastTime = Date.now();
     xhr.upload.onprogress = (e) => {
       if (!e.lengthComputable) return;
       const now = Date.now();
@@ -90,21 +97,123 @@ function uploadToCloud(
         lastTime = now;
       }
       onProgress?.({ fileId: meta.id, loaded: e.loaded, total: e.total, speed });
-      if (e.loaded >= e.total) reachedFull = true;
-    };
-    xhr.upload.onload = () => {
-      // Body is fully sent; server is now writing to R2. Surface that so the UI
-      // can transition from "uploading" to "finalizing" instead of looking stuck.
-      reachedFull = true;
-      onProgress?.({ fileId: meta.id, loaded: file.size, total: file.size, speed: 0 });
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) resolve();
-      else reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText || ""}`));
+      else {
+        let msg = `Upload failed (${xhr.status})`;
+        try {
+          const j = JSON.parse(xhr.responseText);
+          if (j.message) msg = j.message;
+        } catch {
+          /* keep default */
+        }
+        reject(new Error(msg));
+      }
     };
     xhr.onerror = () => reject(new Error("Network error during upload"));
-    xhr.ontimeout = () => reject(new Error(`Upload timed out${reachedFull ? " (server didn't acknowledge)" : ""}`));
+    xhr.ontimeout = () => reject(new Error("Upload timed out"));
     xhr.send(file);
+  });
+}
+
+/** Multipart upload for large files — splits into 90 MB parts so each request
+ *  stays under the Worker's body limit. Aggregates progress across parts. */
+async function uploadMultipart(
+  dropId: string,
+  meta: FileMeta,
+  file: File,
+  onProgress?: (p: UploadProgress) => void,
+): Promise<void> {
+  const base = `${CLOUD_ORIGIN}/drop/${dropId}/file/${meta.id}/mpu`;
+  // 1. Create
+  const createRes = await fetch(base, {
+    method: "POST",
+    headers: {
+      "x-total-size": String(file.size),
+      "x-file-name": encodeURIComponent(meta.name),
+      "x-content-type": meta.mime || "application/octet-stream",
+    },
+  });
+  if (!createRes.ok) {
+    let msg = `Couldn't start upload (${createRes.status})`;
+    try {
+      const j = await createRes.json();
+      if (j.message) msg = j.message;
+    } catch {
+      /* keep */
+    }
+    throw new Error(msg);
+  }
+  const { uploadId } = (await createRes.json()) as { uploadId: string };
+
+  // 2. Upload parts sequentially with aggregated progress.
+  const partCount = Math.ceil(file.size / PART_SIZE);
+  const parts: { partNumber: number; etag: string }[] = [];
+  let uploadedBytes = 0;
+  let lastTime = Date.now();
+  let lastBytes = 0;
+  try {
+    for (let i = 0; i < partCount; i++) {
+      const start = i * PART_SIZE;
+      const end = Math.min(start + PART_SIZE, file.size);
+      const blob = file.slice(start, end);
+      const partBase = uploadedBytes;
+      const etag = await putPart(`${base}/${uploadId}/${i + 1}`, blob, (loadedInPart) => {
+        const now = Date.now();
+        const dt = (now - lastTime) / 1000;
+        const total = partBase + loadedInPart;
+        let speed = 0;
+        if (dt > 0.3) {
+          speed = (total - lastBytes) / dt;
+          lastBytes = total;
+          lastTime = now;
+        }
+        onProgress?.({ fileId: meta.id, loaded: total, total: file.size, speed });
+      });
+      parts.push({ partNumber: i + 1, etag });
+      uploadedBytes = end;
+      onProgress?.({ fileId: meta.id, loaded: uploadedBytes, total: file.size, speed: 0 });
+    }
+  } catch (e) {
+    // Roll back the multipart so the reservation is released.
+    try {
+      await fetch(`${base}/${uploadId}?size=${file.size}`, { method: "DELETE" });
+    } catch {
+      /* best effort */
+    }
+    throw e;
+  }
+
+  // 3. Complete
+  const done = await fetch(`${base}/${uploadId}/complete`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ parts }),
+  });
+  if (!done.ok) throw new Error(`Couldn't finalize upload (${done.status})`);
+}
+
+function putPart(url: string, blob: Blob, onPart: (loaded: number) => void): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.timeout = Math.max(120_000, (blob.size / (0.5 * 1024 * 1024)) * 1000);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onPart(e.loaded);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText).etag);
+        } catch {
+          reject(new Error("Bad part response"));
+        }
+      } else reject(new Error(`Part upload failed (${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error("Network error during upload"));
+    xhr.ontimeout = () => reject(new Error("Part upload timed out"));
+    xhr.send(blob);
   });
 }
 

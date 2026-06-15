@@ -299,19 +299,56 @@ function OptionToggle({
   );
 }
 
-/* The "working" interstitial — files collapse into a pulsing Orb. */
+/* The "working" interstitial — a clean WeTransfer-style upload bar. */
 export function SendWorking({ s }: { s: Controller }) {
+  const w = s.working;
+  const pct = Math.max(0, Math.min(100, Math.round(w.progress * 100)));
+  const failed = !!w.failed;
+
   return (
-    <div className="flex flex-col items-center justify-center gap-6 py-12 text-center">
+    <div className="flex flex-col items-center justify-center gap-7 py-10 text-center">
       <motion.div layoutId="send-orb">
-        <Orb size={120} state="active" intensity={0.7} />
+        <Orb size={104} state={failed ? "waiting" : "active"} intensity={failed ? 0.2 : 0.7} />
       </motion.div>
-      <div>
-        <p className="text-lg font-medium text-fg">{s.working.label || "Working"}</p>
-        <p className="mono mt-1 text-sm text-fg-3">
-          <AnimatedNumber value={Math.round(s.working.progress * 100)} format={(n) => `${n}`} />% ·{" "}
-          {s.mode === "beam" ? "staging" : "dropping"}
-        </p>
+
+      <div className="w-full max-w-sm">
+        <div className="mb-2 flex items-baseline justify-between gap-3">
+          <p className="min-w-0 flex-1 truncate text-left text-[15px] font-medium text-fg">{w.label || "Working"}</p>
+          {!failed && (
+            <span className="mono shrink-0 text-sm tabular-nums text-fg-2">
+              <AnimatedNumber value={pct} format={(n) => `${n}`} />%
+            </span>
+          )}
+        </div>
+
+        {/* The bar */}
+        <div className="h-2 w-full overflow-hidden rounded-full bg-white/[0.07]">
+          <motion.div
+            className="h-full rounded-full"
+            style={{
+              background: failed
+                ? "linear-gradient(90deg,#ff4d6a,#ff8a9c)"
+                : "linear-gradient(90deg,#00ff88,#00c8ff,#0099ff)",
+            }}
+            animate={{ width: `${failed ? 100 : Math.max(2, pct)}%` }}
+            transition={{ duration: 0.35, ease: "easeOut" }}
+          />
+        </div>
+
+        {/* Sub line: speed / status */}
+        <div className="mono mt-2.5 flex items-center justify-between text-[11px] text-fg-3">
+          <span className={cn(failed && "text-[#ff8a9c]")}>{w.sub || (s.mode === "beam" ? "Staging" : "Uploading")}</span>
+          {!failed && w.speed ? <span>{formatBytes(w.speed)}/s</span> : <span />}
+        </div>
+
+        {failed && (
+          <button
+            onClick={s.reset}
+            className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-[12px] text-fg-2 transition-colors hover:border-white/20"
+          >
+            <Icon name="RefreshCw" className="h-3.5 w-3.5" /> Try again
+          </button>
+        )}
       </div>
     </div>
   );

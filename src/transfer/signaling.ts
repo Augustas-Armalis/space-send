@@ -107,14 +107,23 @@ export function createSignaling(beamId: string, selfId: string): Signaling {
   return new BroadcastChannelSignaling(beamId, selfId);
 }
 
-/** ICE configuration. STUN is enough for same-machine + many home networks;
-    TURN (set in src/lib/config.ts) is the fallback for hostile NATs. */
+/** ICE configuration. STUN handles same-network and friendly NATs; TURN relays
+    bytes when a direct peer path is blocked (corporate firewalls, symmetric
+    NATs, some mobile carriers) so Beam works device-to-device across networks.
+    We ship free public TURN (OpenRelay / Metered) so it works out of the box;
+    a private TURN set in src/lib/config.ts takes precedence. */
 export const ICE_CONFIG: RTCConfiguration = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
     ...(TURN_URL
       ? [{ urls: TURN_URL, username: TURN_USER, credential: TURN_CRED } as RTCIceServer]
-      : []),
+      : [
+          // Free public TURN — rate-limited but fine for an internal team.
+          { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+          { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+          { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
+        ]),
   ],
+  iceCandidatePoolSize: 4,
 };

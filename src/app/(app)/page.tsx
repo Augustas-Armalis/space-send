@@ -45,22 +45,6 @@ export default function LandingPage() {
         transition={{ duration: 30, repeat: Infinity, ease: "easeInOut" }}
       />
 
-      {/* Desktop top-right utility nav */}
-      <div className="absolute right-6 top-5 z-30 hidden items-center gap-1 lg:flex">
-        <a
-          href="#mac"
-          className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] text-fg-3 transition-colors hover:text-fg"
-        >
-          <Icon name="Sparkles" className="h-3.5 w-3.5" /> Mac app
-        </a>
-        <Link
-          href="/vault"
-          className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] text-fg-3 transition-colors hover:text-fg"
-        >
-          My Vault
-        </Link>
-      </div>
-
       <div className="mx-auto grid min-h-dvh w-full max-w-6xl grid-cols-1 items-center gap-12 px-4 py-10 xl:grid-cols-[minmax(0,1fr)_440px] xl:gap-8 xl:px-8">
         {/* Hero (desktop left column / mobile top) */}
         <div className="order-1 text-center xl:order-none xl:text-left">

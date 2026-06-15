@@ -210,7 +210,7 @@ function PoolView() {
                         {formatBytes(f.size)} · {f.uploader} · {formatRelative(f.ts)}
                       </p>
                     </div>
-                    <a href={poolFileUrl(poolId, f.id)} download={f.name} target="_blank" rel="noreferrer">
+                    <a href={poolFileUrl(poolId, f.id)} download={f.name}>
                       <Button variant="glass" size="icon-sm" aria-label="Download">
                         <Icon name="Download" className="h-4 w-4" />
                       </Button>
