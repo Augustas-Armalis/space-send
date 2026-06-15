@@ -33,6 +33,8 @@ yarn-error.log*
 /worker/node_modules
 /worker/.wrangler
 /packages/signaling-worker/node_modules
+/packages/signaling-worker/.wrangler/
+**/.wrangler/
 
 # macOS launcher app bundle (machine-specific path; regenerate with osacompile)
 /Space Send.app/
