@@ -22,6 +22,7 @@ export const poolLink = (id: string) => abs(`/pool/?p=${id}`);
     so these must NOT include BASE_PATH. */
 export const poolHref = (id: string) => `/pool/?p=${id}`;
 export const beamHref = (id: string) => `/x/?b=${id}`;
+export const towerHref = (id: string) => `/tower/?b=${id}`;
 
 /* ============================================================================
    Cloud backend (signaling + R2 storage). Both endpoints live on the same

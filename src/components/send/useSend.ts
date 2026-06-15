@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { shortId, beamId as genBeamId, genKey } from "@/lib/ids";
 import { hashFile } from "@/lib/hash";
 import { makePreview } from "@/lib/files";
@@ -13,6 +14,8 @@ import { EXPIRY_OPTIONS, type ExpiryId, type TransferMode } from "@/lib/constant
 import { useTransfers } from "@/store/transfers";
 import { useStash } from "@/store/stash";
 import { useUI } from "@/store/ui";
+import { useTower } from "@/store/tower";
+import { towerHref } from "@/lib/site";
 import { preventSleep, allowSleep } from "@/lib/desktop";
 import { dropLink, beamLink } from "@/lib/site";
 
@@ -34,6 +37,8 @@ function intensityFromSpeed(bytesPerSec: number): number {
 }
 
 export function useSend() {
+  const router = useRouter();
+  const tower = useTower;
   const [mode, setMode] = useState<TransferMode>("drop");
   const [files, setFiles] = useState<SendFile[]>([]);
   const [message, setMessage] = useState("");
@@ -215,18 +220,18 @@ export function useSend() {
       totalSize,
     };
 
+    // The host now lives in the tower store (not this hook) so it survives the
+    // navigation to the dedicated /tower operator page.
+    const t = tower.getState();
     const host = new BeamHost(bId, selfId.current, hostFiles, manifest, {
-      onRecipientJoin: (r) => setRecipients((prev) => [...prev.filter((x) => x.id !== r.id), r]),
-      onRecipientUpdate: (rid, patch) =>
-        setRecipients((prev) => prev.map((x) => (x.id === rid ? { ...x, ...patch } : x))),
-      onRecipientLeave: (rid) => setRecipients((prev) => prev.filter((x) => x.id !== rid)),
-      onAggregateSpeed: (spd) => {
-        setAggregateSpeed(spd);
-        setAurora(spd > 0, intensityFromSpeed(spd));
-      },
-      onStats: (st) => setHostStats(st),
+      onRecipientJoin: (r) => tower.getState().addRecipient(r),
+      onRecipientUpdate: (rid, patch) => tower.getState().patchRecipient(rid, patch),
+      onRecipientLeave: (rid) => tower.getState().removeRecipient(rid),
+      onAggregateSpeed: (spd) => tower.getState().setAggSpeed(spd),
+      onStats: (st) => tower.getState().setStats(st),
     });
-    hostRef.current = host;
+    const url = beamLink(bId, key);
+    t.launch({ id: bId, shareUrl: url, host, files: metas, startedAt: Date.now() });
 
     addBeam({
       id: bId,
@@ -251,11 +256,14 @@ export function useSend() {
       refId: bId,
     });
 
-    const url = beamLink(bId, key);
-    setShareUrl(url);
-    setPhase("ready");
-    setAurora(false);
-  }, [files, message, totalSize, stash.tag, stash.name, addBeam, addTrail, patchFile, setAurora]);
+    // Clear the composer and hand off to the full Tower page.
+    files.forEach((f) => f.preview && URL.revokeObjectURL(f.preview));
+    setFiles([]);
+    setMessage("");
+    setPhase("compose");
+    selfId.current = shortId();
+    router.push(towerHref(bId));
+  }, [files, message, totalSize, stash.tag, stash.name, addBeam, addTrail, patchFile, tower, router]);
 
   const submit = useCallback(() => {
     if (files.length === 0) return;
