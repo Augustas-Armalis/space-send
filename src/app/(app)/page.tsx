@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import Link from "next/link";
-import { AnimatePresence, motion } from "framer-motion";
+import { motion } from "framer-motion";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { SendComposer, SendWorking } from "@/components/send/SendComposer";
 import { ShareCard } from "@/components/send/ShareCard";
@@ -98,23 +98,21 @@ export default function LandingPage() {
           className="order-2 w-full justify-self-center xl:order-none xl:justify-self-end"
         >
           <GlassPanel tilt glow className="w-full p-5 sm:p-6">
-            <AnimatePresence mode="wait">
-              {s.phase === "compose" && (
-                <motion.div key="compose" exit={{ opacity: 0, scale: 0.98 }} transition={{ duration: 0.2 }}>
-                  <SendComposer s={s} />
-                </motion.div>
-              )}
-              {s.phase === "working" && (
-                <motion.div key="working" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                  <SendWorking s={s} />
-                </motion.div>
-              )}
-              {s.phase === "ready" && (
-                <motion.div key="ready" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                  <ShareCard s={s} />
-                </motion.div>
-              )}
-            </AnimatePresence>
+            {/* Plain phase swap. We deliberately avoid AnimatePresence
+                mode="wait" + exit choreography here: with the shared send-orb
+                layoutId it could jam mid-transition and leave the share card
+                stuck at opacity 0 (a blank card). A keyed fade-in per phase is
+                bulletproof — the leaving phase just unmounts. */}
+            <motion.div
+              key={s.phase}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.25 }}
+            >
+              {s.phase === "compose" && <SendComposer s={s} />}
+              {s.phase === "working" && <SendWorking s={s} />}
+              {s.phase === "ready" && <ShareCard s={s} />}
+            </motion.div>
           </GlassPanel>
         </motion.div>
       </div>

@@ -251,6 +251,7 @@ export function useSend() {
     const url = beamLink(bId, key);
     setShareUrl(url);
     setPhase("ready");
+    setAurora(false);
   }, [files, message, totalSize, stash.tag, stash.name, addBeam, addTrail, patchFile, setAurora]);
 
   const submit = useCallback(() => {
