@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/cn";
 import { Orb } from "@/components/brand/Orb";
@@ -162,6 +162,7 @@ function BeamLivePanel({
 }) {
   const [throttle, setThrottle] = useState(0);
   const recipients = s.recipients;
+  const addRef = useRef<HTMLInputElement>(null);
 
   const applyThrottle = (mbps: number) => {
     setThrottle(mbps);
@@ -195,33 +196,45 @@ function BeamLivePanel({
 
       {/* What's being broadcast — gives the host a quick read on which files
           are going out without having to scroll back up. */}
-      {s.files.length > 0 && (
-        <div className="rounded-xl border border-white/8 bg-white/[0.02] px-3 py-2.5">
-          <div className="mb-1.5 flex items-center justify-between">
-            <span className="eyebrow">Broadcasting</span>
-            <span className="mono text-[10px] text-fg-3">{s.files.length} · {formatBytes(s.totalSize)}</span>
-          </div>
-          <ul className="space-y-1">
-            {s.files.slice(0, 3).map((f) => (
-              <li key={f.meta.id} className="flex items-center gap-2 text-[12px] text-fg-2">
-                <Icon name="FileIcon" className="h-3 w-3 shrink-0 text-fg-3" />
-                <span className="truncate">{f.meta.name}</span>
-                <span className="mono ml-auto text-[10px] text-fg-3">{formatBytes(f.meta.size)}</span>
-              </li>
-            ))}
-            {s.files.length > 3 && (
-              <li className="text-[11px] text-fg-3">+ {s.files.length - 3} more</li>
-            )}
-          </ul>
+      <div className="rounded-xl border border-white/8 bg-white/[0.02] px-3 py-2.5">
+        <div className="mb-1.5 flex items-center justify-between">
+          <span className="eyebrow">Hosting {s.files.length} {s.files.length === 1 ? "file" : "files"}</span>
+          <span className="mono text-[10px] text-fg-3">{formatBytes(s.totalSize)}</span>
         </div>
-      )}
+        <ul className="space-y-1">
+          {s.files.slice(0, 4).map((f) => (
+            <li key={f.meta.id} className="flex items-center gap-2 text-[12px] text-fg-2">
+              <Icon name="FileIcon" className="h-3 w-3 shrink-0 text-fg-3" />
+              <span className="truncate">{f.meta.name}</span>
+              <span className="mono ml-auto text-[10px] text-fg-3">{formatBytes(f.meta.size)}</span>
+            </li>
+          ))}
+          {s.files.length > 4 && <li className="text-[11px] text-fg-3">+ {s.files.length - 4} more</li>}
+        </ul>
+        <button
+          onClick={() => addRef.current?.click()}
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-white/12 py-2 text-[12px] text-fg-3 transition-colors hover:border-[#00c8ff]/30 hover:text-fg-2"
+        >
+          <Icon name="Plus" className="h-3.5 w-3.5" /> Add files to this Beam
+        </button>
+        <input
+          ref={addRef}
+          type="file"
+          multiple
+          hidden
+          onChange={(e) => {
+            if (e.target.files?.length) s.addBeamFiles(e.target.files);
+            e.target.value = "";
+          }}
+        />
+      </div>
 
       {/* Vector visualization */}
       <BeamVector senderSeed={senderSeed} senderName={senderName} senderAvatar={senderAvatar} recipients={recipients} active={s.aggregateSpeed > 0} />
 
       {recipients.length === 0 ? (
         <p className="text-center text-[13px] text-fg-3">
-          Keep this tab open. Anyone who opens your link connects and downloads automatically.
+          Keep this tab open. Anyone who opens your link connects and can download what you&apos;re hosting.
         </p>
       ) : (
         <div className="space-y-2">

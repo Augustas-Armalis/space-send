@@ -194,25 +194,15 @@ export function useSend() {
     const bId = genBeamId();
     const key = genKey();
     setShareId(bId);
-    setPhase("working");
-    setWorking({ label: "Staging files", progress: 0.2 });
-    setAurora(true, 0.3);
     void preventSleep(); // your device is the signal tower — keep it awake
 
-    const hostFiles: HostFile[] = [];
-    const metas: FileMeta[] = [];
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i];
-      patchFile(f.meta.id, { state: "staged" });
-      setWorking({ label: `Staging ${f.meta.name}`, progress: (i + 1) / (files.length + 1) });
-      try {
-        f.meta.hash = await hashFile(f.file);
-      } catch {
-        /* skip */
-      }
-      hostFiles.push({ meta: f.meta, file: f.file });
-      metas.push({ ...f.meta });
-    }
+    // No hashing / no upload — Beam is instant. The host just keeps the File
+    // handles and streams bytes peer-to-peer when a viewer asks. This is what
+    // makes multi-GB transfers start the moment you hit Beam. (WebRTC data
+    // channels are reliable + ordered, so bytes arrive intact without SHA.)
+    const hostFiles: HostFile[] = files.map((f) => ({ meta: f.meta, file: f.file }));
+    const metas: FileMeta[] = files.map((f) => ({ ...f.meta }));
+    files.forEach((f) => patchFile(f.meta.id, { state: "staged" }));
 
     const manifest: BeamManifest = {
       files: metas.map((m) => ({ id: m.id, name: m.name, size: m.size, mime: m.mime, hash: m.hash })),
@@ -269,6 +259,21 @@ export function useSend() {
     else void submitBeam();
   }, [files.length, mode, submitDrop, submitBeam]);
 
+  /** Operator action: add more files to a Beam that's already live. The new
+   *  manifest is pushed to every connected viewer instantly. */
+  const addBeamFiles = useCallback((incoming: FileList | File[]) => {
+    const arr = Array.from(incoming);
+    const newSendFiles: SendFile[] = arr.map((file) => ({
+      meta: { id: shortId(), name: file.name, size: file.size, mime: file.type || "application/octet-stream" },
+      file,
+      preview: makePreview(file),
+      progress: 0,
+      state: "staged",
+    }));
+    setFiles((prev) => [...prev, ...newSendFiles]);
+    hostRef.current?.addFiles(newSendFiles.map((f) => ({ meta: f.meta, file: f.file })));
+  }, []);
+
   const reset = useCallback(() => {
     hostRef.current?.close();
     hostRef.current = null;
@@ -306,6 +311,6 @@ export function useSend() {
     shareUrl, shareId,
     recipients, aggregateSpeed, hostStats,
     host: hostRef,
-    submit, reset,
+    submit, reset, addBeamFiles,
   };
 }

@@ -3,15 +3,22 @@ import type { BeamManifest, BeamRecipient, DataMsg, FileMeta, SignalMsg } from "
 import { sha256Hex } from "@/lib/hash";
 
 /* ============================================================================
-   The Beam engine — real WebRTC data-channel file transfer. Your device IS the
-   server. Bytes go peer-to-peer (DTLS-encrypted). Works between two browser
-   tabs out of the box (BroadcastChannel signaling) and across devices when a
-   signaling Worker URL is configured.
+   The Beam engine — real WebRTC data-channel file transfer. The HOST device IS
+   the server: it keeps the selected File handles in memory and streams their
+   bytes peer-to-peer (DTLS-encrypted) to every viewer who opens the link. No
+   bytes touch any cloud — Cloudflare only relays the WebRTC handshake.
+
+   • One host, many simultaneous viewers (a peer + data channel each).
+   • Host can add files at any time → manifest re-broadcasts to all viewers.
+   • Viewers SEE the file list and choose what to download. Large files stream
+     straight to disk via the File System Access API when available, so a 10 GB
+     transfer never has to fit in RAM.
    ========================================================================== */
 
-const CHUNK = 64 * 1024; // 64 KB — safe across browsers
-const HIGH_WATER = 8 * 1024 * 1024; // pause streaming above 8 MB buffered
+const CHUNK = 64 * 1024;            // 64 KB — safe across browsers
+const HIGH_WATER = 8 * 1024 * 1024; // pause sending above 8 MB buffered
 const LOW_WATER = 1 * 1024 * 1024;
+const STREAM_TO_DISK_MIN = 64 * 1024 * 1024; // use the save-picker for files ≥ 64 MB
 
 export interface HostFile {
   meta: FileMeta;
@@ -20,17 +27,11 @@ export interface HostFile {
 
 /** Live host-side telemetry, emitted ~1 Hz while a Beam is broadcasting. */
 export interface BeamHostStats {
-  /** Peers with an open data channel right now. */
   connected: number;
-  /** Peers actively pulling bytes (status === "extracting"). */
   active: number;
-  /** Peers that finished downloading everything. */
   completed: number;
-  /** Combined outbound throughput across all active peers (bytes/sec). */
   aggSpeed: number;
-  /** Total bytes buffered in all data channels — a proxy for memory pressure. */
   bufferedBytes: number;
-  /** 0–1 transmit load: how hard this device is working as the signal tower. */
   load: number;
 }
 
@@ -59,11 +60,18 @@ function bars(rtt: number): number {
   return 1;
 }
 
+function regionFromGeo(geo?: { country?: string; city?: string }): string | undefined {
+  if (!geo) return undefined;
+  if (geo.city && geo.country) return `${geo.city}, ${geo.country}`;
+  return geo.country || geo.city || undefined;
+}
+
 export class BeamHost {
   private sig: Signaling;
   private peers = new Map<string, PeerState>();
-  private throttle = 0; // bytes/sec, 0 = unlimited
+  private throttle = 0;
   private closed = false;
+  private timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private beamId: string,
@@ -74,9 +82,25 @@ export class BeamHost {
   ) {
     this.sig = createSignaling(beamId, selfId);
     this.sig.onMessage((m) => this.onSignal(m));
-    // Announce we're live and invite anyone already waiting.
-    this.sig.send({ kind: "hello", beam: beamId, from: selfId });
+    void this.sig.ready.then(() => this.sig.send({ kind: "hello", beam: beamId, from: selfId }));
     this.startSpeedLoop();
+  }
+
+  /** Add files to a live Beam and push the new manifest to every viewer. */
+  addFiles(more: HostFile[]) {
+    this.files.push(...more);
+    this.manifest = {
+      ...this.manifest,
+      files: this.files.map((f) => ({ id: f.meta.id, name: f.meta.name, size: f.meta.size, mime: f.meta.mime, hash: f.meta.hash })),
+      totalSize: this.files.reduce((a, f) => a + f.meta.size, 0),
+    };
+    this.peers.forEach((p) => {
+      if (p.channel && p.channel.readyState === "open") this.sendCtrl(p.channel, { t: "manifest", manifest: this.manifest });
+    });
+  }
+
+  fileCount() {
+    return this.files.length;
   }
 
   setThrottle(bytesPerSec: number) {
@@ -97,10 +121,10 @@ export class BeamHost {
     }
   }
 
-  private async onSignal(m: SignalMsg) {
+  private async onSignal(m: SignalMsg & { geo?: { country?: string; city?: string } }) {
     if (m.beam !== this.beamId) return;
     if (m.kind === "join") {
-      await this.createPeer(m.from);
+      await this.createPeer(m.from, regionFromGeo(m.geo));
     } else if (m.kind === "answer" && m.to === this.selfId) {
       const p = this.peers.get(m.from);
       if (p) await p.pc.setRemoteDescription(new RTCSessionDescription(m.sdp));
@@ -110,7 +134,7 @@ export class BeamHost {
         try {
           await p.pc.addIceCandidate(new RTCIceCandidate(m.candidate));
         } catch {
-          /* ignore late candidates */
+          /* late candidate */
         }
       }
     } else if (m.kind === "bye") {
@@ -118,7 +142,7 @@ export class BeamHost {
     }
   }
 
-  private async createPeer(remoteId: string) {
+  private async createPeer(remoteId: string, region?: string) {
     if (this.peers.has(remoteId)) return;
     const pc = new RTCPeerConnection(ICE_CONFIG);
     const channel = pc.createDataChannel("beam", { ordered: true });
@@ -126,6 +150,7 @@ export class BeamHost {
 
     const recipient: BeamRecipient = {
       id: remoteId,
+      region,
       signal: 4,
       progress: 0,
       speed: 0,
@@ -138,13 +163,7 @@ export class BeamHost {
 
     pc.onicecandidate = (e) => {
       if (e.candidate)
-        this.sig.send({
-          kind: "ice",
-          beam: this.beamId,
-          from: this.selfId,
-          to: remoteId,
-          candidate: e.candidate.toJSON(),
-        });
+        this.sig.send({ kind: "ice", beam: this.beamId, from: this.selfId, to: remoteId, candidate: e.candidate.toJSON() });
     };
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
@@ -211,7 +230,7 @@ export class BeamHost {
     const wanted = this.files.filter((f) => fileIds.includes(f.meta.id));
 
     for (const { meta, file } of wanted) {
-      if (this.closed) return;
+      if (this.closed || channel.readyState !== "open") return;
       this.sendCtrl(channel, { t: "file-begin", id: meta.id, name: meta.name, size: meta.size, mime: meta.mime });
       let offset = 0;
       let lastThrottleTs = Date.now();
@@ -220,9 +239,7 @@ export class BeamHost {
         if (this.closed || channel.readyState !== "open") return;
         const slice = file.slice(offset, Math.min(offset + CHUNK, file.size));
         const buf = await slice.arrayBuffer();
-        // Backpressure
         if (channel.bufferedAmount > HIGH_WATER) await this.waitDrain(channel);
-        // Optional throttle
         if (this.throttle > 0) {
           sentSinceThrottle += buf.byteLength;
           const elapsed = (Date.now() - lastThrottleTs) / 1000;
@@ -273,8 +290,6 @@ export class BeamHost {
         }
         if (p.recipient.status === "complete") completed += 1;
         if (p.channel) bufferedBytes += p.channel.bufferedAmount;
-
-        // Refresh signal from RTT when available.
         p.pc.getStats?.().then((stats) => {
           stats.forEach((report) => {
             if (report.type === "candidate-pair" && report.state === "succeeded" && report.currentRoundTripTime != null) {
@@ -288,21 +303,14 @@ export class BeamHost {
         });
       });
       this.cb.onAggregateSpeed?.(agg);
-
-      // "Transmit load": how hard this device is working as the signal tower.
-      // Two honest, in-browser-measurable pressures combined: how many peers we
-      // serve at once, and how saturated the outbound buffers are (a stand-in
-      // for memory/CPU pressure — high buffered bytes means we're shovelling).
       const bufferLoad = Math.min(1, bufferedBytes / (HIGH_WATER * Math.max(1, active)));
-      const peerLoad = Math.min(1, active / 6); // 6 concurrent streams ≈ "busy"
+      const peerLoad = Math.min(1, active / 6);
       const load = Math.min(1, bufferLoad * 0.6 + peerLoad * 0.4);
-
       this.cb.onStats?.({ connected, active, completed, aggSpeed: agg, bufferedBytes, load });
       this.timer = setTimeout(tick, 1000);
     };
     this.timer = setTimeout(tick, 1000);
   }
-  private timer: ReturnType<typeof setTimeout> | null = null;
 
   close() {
     this.closed = true;
@@ -321,96 +329,140 @@ export class BeamHost {
   }
 }
 
-/* ---------------------------------------------------------------------------- */
+/* ============================================================================
+   Viewer side.
+   ========================================================================== */
 
 export interface ReceiverCallbacks {
   onManifest?: (m: BeamManifest) => void;
   onConnecting?: () => void;
   onConnected?: () => void;
   onFileProgress?: (id: string, received: number, total: number, speed: number) => void;
-  onFileComplete?: (id: string, blob: Blob, verified: boolean) => void;
-  onAllComplete?: () => void;
+  onFileComplete?: (id: string, verified: boolean) => void;
   onSignal?: (bars: number) => void;
   onError?: (e: Error) => void;
-  onSevered?: (atFraction: number) => void;
+  onHostGone?: () => void;
 }
 
-interface IncomingFile {
-  id: string;
-  name: string;
+/** A place to put incoming bytes for one file — either a streaming disk writer
+ *  (File System Access API) or an in-memory chunk buffer that becomes a Blob. */
+interface Sink {
+  write(chunk: Uint8Array): Promise<void> | void;
+  finish(): Promise<Blob | null>;
+  abort(): void;
+  hash: boolean; // whether we can hash (only the in-memory path verifies)
+}
+
+function makeBlobSink(mime: string): Sink {
+  const chunks: Uint8Array[] = [];
+  return {
+    write(chunk) {
+      chunks.push(chunk);
+    },
+    async finish() {
+      return new Blob(chunks as BlobPart[], { type: mime });
+    },
+    abort() {
+      chunks.length = 0;
+    },
+    hash: true,
+  };
+}
+
+async function makeDiskSink(name: string): Promise<Sink | null> {
+  const picker = (window as unknown as { showSaveFilePicker?: (o: unknown) => Promise<unknown> }).showSaveFilePicker;
+  if (!picker) return null;
+  try {
+    const handle = (await picker({ suggestedName: name })) as { createWritable: () => Promise<{ write: (d: unknown) => Promise<void>; close: () => Promise<void>; abort?: () => Promise<void> }> };
+    const writable = await handle.createWritable();
+    return {
+      async write(chunk) {
+        await writable.write(chunk);
+      },
+      async finish() {
+        await writable.close();
+        return null; // already written to disk
+      },
+      abort() {
+        void writable.abort?.();
+      },
+      hash: false,
+    };
+  } catch {
+    return null; // user cancelled the picker
+  }
+}
+
+interface ActiveDownload {
+  fileId: string;
   size: number;
-  mime: string;
   received: number;
-  chunks: Uint8Array[];
-  expectedHash?: string;
+  sink: Sink;
+  onEnd: (hash?: string) => void;
+  reject: (e: Error) => void;
 }
 
 export class BeamReceiver {
   private sig: Signaling;
   private pc: RTCPeerConnection;
   private channel: RTCDataChannel | null = null;
-  private incoming = new Map<string, IncomingFile>();
-  private current: IncomingFile | null = null;
   private manifest: BeamManifest | null = null;
-  private totalReceived = 0;
-  private lastBytes = 0;
-  private lastTime = Date.now();
-  private progressTimer: ReturnType<typeof setInterval> | null = null;
   private hostId: string | null = null;
   private closed = false;
+  private connected = false;
+
+  private active: ActiveDownload | null = null;
+  private queue: (() => void)[] = [];
+
+  private lastBytes = 0;
+  private lastTime = Date.now();
+  private emaSpeed = 0;
 
   constructor(
     private beamId: string,
     private selfId: string,
     private cb: ReceiverCallbacks = {},
-    private autoStart: boolean = true,
   ) {
     this.sig = createSignaling(beamId, selfId);
     this.pc = new RTCPeerConnection(ICE_CONFIG);
     this.cb.onConnecting?.();
     this.wirePc();
     this.sig.onMessage((m) => this.onSignal(m));
-    // Announce presence; host will offer.
-    void this.sig.ready.then(() => {
-      this.sig.send({ kind: "join", beam: beamId, from: selfId });
-    });
+    void this.sig.ready.then(() => this.sig.send({ kind: "join", beam: beamId, from: selfId }));
+  }
+
+  get isConnected() {
+    return this.connected;
   }
 
   private wirePc() {
     this.pc.onicecandidate = (e) => {
       if (e.candidate && this.hostId)
-        this.sig.send({
-          kind: "ice",
-          beam: this.beamId,
-          from: this.selfId,
-          to: this.hostId,
-          candidate: e.candidate.toJSON(),
-        });
+        this.sig.send({ kind: "ice", beam: this.beamId, from: this.selfId, to: this.hostId, candidate: e.candidate.toJSON() });
     };
     this.pc.ondatachannel = (e) => {
       this.channel = e.channel;
       this.channel.binaryType = "arraybuffer";
       this.channel.onopen = () => {
+        this.connected = true;
         this.cb.onConnected?.();
-        this.send({ t: "ready" });
-        this.startProgressLoop();
       };
       this.channel.onmessage = (ev) => this.onData(ev.data);
       this.channel.onclose = () => {
-        if (!this.closed && this.manifest && this.totalReceived < (this.manifest.totalSize || 1)) {
-          this.cb.onSevered?.(this.totalReceived / (this.manifest.totalSize || 1));
+        if (this.active) {
+          this.active.reject(new Error("Connection closed mid-transfer"));
+          this.active = null;
         }
       };
     };
     this.pc.onconnectionstatechange = () => {
-      if (this.pc.connectionState === "failed") this.cb.onError?.(new Error("Beam severed"));
+      if (this.pc.connectionState === "failed") this.cb.onError?.(new Error("Beam connection failed"));
     };
   }
 
   private async onSignal(m: SignalMsg) {
     if (m.beam !== this.beamId) return;
     if (m.kind === "hello") {
-      // Host came online after us — re-announce.
       this.sig.send({ kind: "join", beam: this.beamId, from: this.selfId });
     } else if (m.kind === "offer" && (m.to === this.selfId || !m.to)) {
       this.hostId = m.from;
@@ -427,7 +479,7 @@ export class BeamReceiver {
         }
       }
     } else if (m.kind === "bye") {
-      if (!this.closed) this.cb.onError?.(new Error("Host left"));
+      if (!this.closed) this.cb.onHostGone?.();
     }
   }
 
@@ -441,8 +493,57 @@ export class BeamReceiver {
     }
   }
 
-  startExtract(fileIds: string[]) {
-    this.send({ t: "extract", fileIds });
+  /** Download one file. Opens a disk writer (large files) or builds a Blob.
+   *  MUST be called from a user gesture so the save-picker is allowed. */
+  async download(file: { id: string; name: string; size: number; mime: string; hash?: string }): Promise<void> {
+    // Pick the sink up-front (inside the click gesture) before queueing.
+    let sink: Sink | null = null;
+    if (file.size >= STREAM_TO_DISK_MIN) sink = await makeDiskSink(file.name);
+    if (!sink) sink = makeBlobSink(file.mime);
+    const chosen = sink;
+
+    let expectedHash: string | undefined;
+    await new Promise<void>((resolve, reject) => {
+      const start = () => {
+        this.active = {
+          fileId: file.id,
+          size: file.size,
+          received: 0,
+          sink: chosen,
+          onEnd: (h) => {
+            expectedHash = h;
+            resolve();
+          },
+          reject,
+        };
+        this.lastBytes = 0;
+        this.lastTime = Date.now();
+        this.emaSpeed = 0;
+        this.send({ t: "extract", fileIds: [file.id] });
+      };
+      // Serialize: one active download at a time so chunk framing stays clean.
+      if (this.active) this.queue.push(start);
+      else start();
+    }).finally(() => {
+      const next = this.queue.shift();
+      if (next) next();
+    });
+
+    // Finalize: disk sinks return null (already on disk); blob sinks return a
+    // Blob we verify (if a hash was sent) and hand to the browser to save.
+    const blob = await chosen.finish();
+    let verified = true;
+    if (blob) {
+      if (expectedHash) {
+        try {
+          verified = (await sha256Hex(await blob.arrayBuffer())) === expectedHash;
+        } catch {
+          verified = false;
+        }
+      }
+      triggerDownload(blob, file.name);
+    }
+    this.cb.onFileComplete?.(file.id, verified);
   }
 
   private onData(data: unknown) {
@@ -456,94 +557,41 @@ export class BeamReceiver {
       if (msg.t === "manifest") {
         this.manifest = msg.manifest;
         this.cb.onManifest?.(msg.manifest);
-        // Auto-receive: anyone who opens the link starts pulling immediately,
-        // no "Extract" click. The host streams the moment it sees this.
-        if (this.autoStart) this.startExtract(msg.manifest.files.map((f) => f.id));
-      } else if (msg.t === "file-begin") {
-        this.current = {
-          id: msg.id,
-          name: msg.name,
-          size: msg.size,
-          mime: msg.mime,
-          received: 0,
-          chunks: [],
-        };
-        this.incoming.set(msg.id, this.current);
       } else if (msg.t === "file-end") {
-        void this.finishFile(msg.id, msg.hash);
+        const a = this.active;
+        if (a) {
+          this.active = null;
+          a.onEnd(msg.hash); // resolves the download() promise; finalize happens there
+        }
       } else if (msg.t === "signal") {
         this.cb.onSignal?.(msg.bars);
       }
+      // file-begin is implicit — the active download is already set up.
       return;
     }
-    // Binary chunk
-    if (!this.current) return;
+    if (!this.active) return;
     const buf = data instanceof ArrayBuffer ? new Uint8Array(data) : null;
     if (!buf) return;
-    this.current.chunks.push(buf);
-    this.current.received += buf.byteLength;
-    this.totalReceived += buf.byteLength;
-    const total = this.manifest?.totalSize || this.current.size;
-    this.cb.onFileProgress?.(this.current.id, this.current.received, this.current.size, this.instSpeed());
-    void total;
+    void this.active.sink.write(buf);
+    this.active.received += buf.byteLength;
+    this.cb.onFileProgress?.(this.active.fileId, this.active.received, this.active.size, this.instSpeed(this.active.received));
+    this.send({ t: "progress", id: this.active.fileId, received: this.active.received });
   }
 
-  private instSpeed(): number {
+  private instSpeed(received: number): number {
     const now = Date.now();
     const dt = (now - this.lastTime) / 1000;
-    if (dt < 0.25) return this._lastSpeed;
-    const speed = (this.totalReceived - this.lastBytes) / dt;
-    this.lastBytes = this.totalReceived;
+    if (dt < 0.25) return this.emaSpeed;
+    const speed = (received - this.lastBytes) / dt;
+    this.lastBytes = received;
     this.lastTime = now;
-    this._lastSpeed = speed * 0.4 + this._lastSpeed * 0.6; // EMA
-    return this._lastSpeed;
-  }
-  private _lastSpeed = 0;
-
-  private async finishFile(id: string, expectedHash?: string) {
-    const f = this.incoming.get(id);
-    if (!f) return;
-    const blob = new Blob(f.chunks as BlobPart[], { type: f.mime });
-    let verified = true;
-    if (expectedHash) {
-      try {
-        const got = await sha256Hex(await blob.arrayBuffer());
-        verified = got === expectedHash;
-      } catch {
-        verified = false;
-      }
-    }
-    f.chunks = []; // free memory
-    this.cb.onFileComplete?.(id, blob, verified);
-    this.current = null;
-    // All done?
-    if (this.manifest && this.incoming.size >= this.manifest.files.length) {
-      const allDone = this.manifest.files.every((mf) => {
-        const inc = this.incoming.get(mf.id);
-        return inc && inc.received >= inc.size;
-      });
-      if (allDone) {
-        this.send({ t: "complete" });
-        this.cb.onAllComplete?.();
-        this.stopProgressLoop();
-      }
-    }
-  }
-
-  private startProgressLoop() {
-    // Bilateral telemetry: report received bytes to the host at 4 Hz.
-    this.progressTimer = setInterval(() => {
-      if (this.current) this.send({ t: "progress", id: this.current.id, received: this.totalReceived });
-    }, 250);
-  }
-  private stopProgressLoop() {
-    if (this.progressTimer) clearInterval(this.progressTimer);
-    this.progressTimer = null;
+    this.emaSpeed = speed * 0.4 + this.emaSpeed * 0.6;
+    return this.emaSpeed;
   }
 
   close() {
     this.closed = true;
-    this.stopProgressLoop();
+    if (this.active) this.active.sink.abort();
     try {
       this.channel?.close();
       this.pc.close();
@@ -553,4 +601,15 @@ export class BeamReceiver {
     this.sig.send({ kind: "bye", beam: this.beamId, from: this.selfId });
     this.sig.close();
   }
+}
+
+function triggerDownload(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }

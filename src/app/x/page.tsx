@@ -2,19 +2,11 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { AnimatePresence, motion } from "framer-motion";
-import {
-  RecipientFrame,
-  SenderHero,
-  ExtractCTA,
-  RecipientFooter,
-  Handshake,
-  CompleteState,
-} from "@/components/recipient/RecipientUI";
+import { motion } from "framer-motion";
+import { RecipientFrame, SenderHero, RecipientFooter, Handshake } from "@/components/recipient/RecipientUI";
 import { FileCard, type FileCardState } from "@/components/ui/FileCard";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
-import { SignalBars } from "@/components/ui/SignalBars";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ContlesMark } from "@/components/brand/ContlesMark";
 import { BeamReceiver } from "@/transfer/beam";
@@ -22,11 +14,10 @@ import { HAS_CLOUD_SIGNALING } from "@/transfer/signaling";
 import type { BeamManifest } from "@/transfer/types";
 import { shortId } from "@/lib/ids";
 import { useUI } from "@/store/ui";
-import { downloadBlob } from "@/lib/files";
 import { formatBytes } from "@/lib/format";
 import { COPY } from "@/lib/constants";
 
-type Status = "connecting" | "ready" | "extracting" | "complete" | "offline" | "severed";
+type Conn = "connecting" | "live" | "offline";
 interface FState {
   progress: number;
   state: FileCardState;
@@ -41,71 +32,58 @@ function intensity(bps: number) {
 export default function Page() {
   return (
     <Suspense fallback={null}>
-      <BeamRecipientInner />
+      <BeamViewer />
     </Suspense>
   );
 }
 
-function BeamRecipientInner() {
+function BeamViewer() {
   const id = useSearchParams().get("b") ?? "";
   const setAurora = useUI((s) => s.setAurora);
-  const fireComplete = useUI((s) => s.fireComplete);
 
-  const [status, setStatus] = useState<Status>("connecting");
+  const [conn, setConn] = useState<Conn>("connecting");
   const [manifest, setManifest] = useState<BeamManifest | null>(null);
   const [fstates, setFstates] = useState<Record<string, FState>>({});
-  const [signal, setSignal] = useState(4);
-  const [severedAt, setSeveredAt] = useState(0);
-  const [aggSpeed, setAggSpeed] = useState(0);
+  const [anyActive, setAnyActive] = useState(false);
 
   const receiverRef = useRef<BeamReceiver | null>(null);
-  const blobsRef = useRef<Record<string, Blob>>({});
   const selfId = useRef(shortId());
   const startedRef = useRef(false);
 
+  const patch = (fid: string, p: Partial<FState>) =>
+    setFstates((prev) => ({ ...prev, [fid]: { ...(prev[fid] ?? { progress: 0, state: "queued" }), ...p } }));
+
   useEffect(() => {
-    if (startedRef.current) return;
+    if (startedRef.current || !id) return;
     startedRef.current = true;
 
     const recv = new BeamReceiver(id, selfId.current, {
       onManifest: (m) => {
         setManifest(m);
-        setFstates(Object.fromEntries(m.files.map((f) => [f.id, { progress: 0, state: "queued" as FileCardState }])));
-        // Auto-receive starts immediately in the engine, so jump straight to the
-        // live transfer view — no manual "Extract" gate.
-        setStatus("extracting");
-        setAurora(true, 0.3);
+        setConn("live");
+        setFstates((prev) => {
+          const next = { ...prev };
+          m.files.forEach((f) => {
+            if (!next[f.id]) next[f.id] = { progress: 0, state: "queued" };
+          });
+          return next;
+        });
       },
       onFileProgress: (fid, received, total, speed) => {
-        setFstates((prev) => ({ ...prev, [fid]: { ...prev[fid], progress: received / total, state: "extracting", speed } }));
-        setAggSpeed(speed);
+        patch(fid, { progress: total ? received / total : 0, state: "extracting", speed });
         setAurora(true, intensity(speed));
       },
-      onFileComplete: (fid, blob, verified) => {
-        blobsRef.current[fid] = blob;
-        const name = manifestNameRef.current[fid] ?? "file";
-        setFstates((prev) => ({ ...prev, [fid]: { ...prev[fid], progress: 1, state: "complete", verified } }));
-        downloadBlob(blob, name);
-      },
-      onAllComplete: () => {
-        setAurora(false);
-        fireComplete();
-        setStatus("complete");
-      },
-      onSignal: (bars) => setSignal(bars),
-      onError: () => setStatus((s) => (s === "complete" ? s : "offline")),
-      onSevered: (frac) => {
-        setSeveredAt(Math.round(frac * 100));
-        setStatus("severed");
+      onFileComplete: (fid, verified) => {
+        patch(fid, { progress: 1, state: "complete", verified });
         setAurora(false);
       },
+      onError: () => setConn((c) => (c === "live" ? c : "offline")),
+      onHostGone: () => setConn((c) => (c === "live" ? c : "offline")),
     });
     receiverRef.current = recv;
 
-    // Host-offline detection: no manifest within 12s → Signal lost.
-    const t = setTimeout(() => {
-      setStatus((s) => (s === "connecting" ? "offline" : s));
-    }, 12000);
+    // If no manifest within 12s, the host isn't online.
+    const t = setTimeout(() => setConn((c) => (c === "connecting" ? "offline" : c)), 12000);
 
     return () => {
       clearTimeout(t);
@@ -115,42 +93,36 @@ function BeamRecipientInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  // Keep a name lookup for downloads inside callbacks.
-  const manifestNameRef = useRef<Record<string, string>>({});
-  useEffect(() => {
-    if (manifest) manifestNameRef.current = Object.fromEntries(manifest.files.map((f) => [f.id, f.name]));
-  }, [manifest]);
-
-  const startExtract = () => {
-    if (!manifest) return;
-    setStatus("extracting");
-    setAurora(true, 0.4);
-    setFstates((prev) => {
-      const next = { ...prev };
-      manifest.files.forEach((f) => (next[f.id] = { ...next[f.id], state: "queued" }));
-      return next;
-    });
-    receiverRef.current?.startExtract(manifest.files.map((f) => f.id));
+  const downloadOne = async (f: { id: string; name: string; size: number; mime: string; hash?: string }) => {
+    setAnyActive(true);
+    try {
+      await receiverRef.current?.download(f);
+    } catch {
+      patch(f.id, { state: "failed" });
+    } finally {
+      setAnyActive(false);
+    }
   };
 
-  const saveAll = () => {
+  const downloadAll = async () => {
     if (!manifest) return;
-    manifest.files.forEach((f) => {
-      const b = blobsRef.current[f.id];
-      if (b) downloadBlob(b, f.name);
-    });
+    setAnyActive(true);
+    for (const f of manifest.files) {
+      if (fstates[f.id]?.state === "complete") continue;
+      try {
+        await receiverRef.current?.download(f);
+      } catch {
+        patch(f.id, { state: "failed" });
+      }
+    }
+    setAnyActive(false);
   };
 
-  /* ---- Error states ---- */
-  if (status === "offline") {
-    // Distinguish "no signaling worker configured" from "host actually offline".
-    // Without HAS_CLOUD_SIGNALING the recipient can only reach a sender in the
-    // same browser via BroadcastChannel, so an open-from-another-device fails
-    // here every time — and that's a config issue, not the sender's fault.
-    const title = HAS_CLOUD_SIGNALING ? COPY.hostOfflineTitle : "Cross-device Beam not configured";
+  if (conn === "offline") {
+    const title = HAS_CLOUD_SIGNALING ? "Signal lost" : "Cross-device Beam not configured";
     const sub = HAS_CLOUD_SIGNALING
-      ? COPY.hostOfflineSub
-      : "This site was built without a NEXT_PUBLIC_SIGNAL_URL, so Beams only reach tabs in the same browser. Use Drop for cross-device transfers, or set the secret and redeploy.";
+      ? "The host's device is offline. Beams are live — ask them to reopen the Beam, or request a Drop instead."
+      : "This site was built without a signaling URL, so Beams only reach the same browser.";
     return (
       <RecipientFrame>
         <div className="grid min-h-[55vh] place-items-center">
@@ -162,27 +134,11 @@ function BeamRecipientInner() {
       </RecipientFrame>
     );
   }
-  if (status === "severed") {
-    return (
-      <RecipientFrame>
-        <div className="grid min-h-[55vh] place-items-center">
-          <EmptyState
-            title={COPY.severed(severedAt)}
-            sub="The connection to the sender dropped mid-stream."
-            action={
-              <Button variant="primary" icon="RefreshCw" onClick={() => window.location.reload()}>
-                {COPY.resumeExtraction}
-              </Button>
-            }
-          />
-        </div>
-      </RecipientFrame>
-    );
-  }
-  if (status === "connecting") {
+
+  if (conn === "connecting") {
     return (
       <RecipientFrame active intensity={0.2}>
-        <Handshake label={COPY.establishingSignal} />
+        <Handshake label="Locking onto the signal tower…" />
         <div className="mt-10 flex justify-center">
           <ContlesMark />
         </div>
@@ -191,46 +147,39 @@ function BeamRecipientInner() {
   }
 
   const totalSize = manifest?.totalSize ?? 0;
-  const senderName = manifest?.senderName || "Someone";
+  const allDone = !!manifest && manifest.files.every((f) => fstates[f.id]?.state === "complete");
 
   return (
-    <RecipientFrame active={status === "extracting"} intensity={intensity(aggSpeed)}>
-      <AnimatePresence mode="wait">
-        {status === "complete" ? (
-          <motion.div key="done" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <CompleteState />
-            <div className="mt-6 flex justify-center">
-              <Button variant="glass" icon="Download" onClick={saveAll}>
-                {COPY.saveToDevice}
-              </Button>
-            </div>
-          </motion.div>
-        ) : (
-          <motion.div key="files" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <SenderHero
-              name={senderName}
-              seed={manifest?.senderTag || id}
-              count={manifest?.files.length ?? 0}
-              message={manifest?.message}
-              beam
-              online
-            />
+    <RecipientFrame active={anyActive} intensity={0.5}>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+        <SenderHero
+          name={manifest?.senderName || "Someone"}
+          seed={manifest?.senderTag || id}
+          count={manifest?.files.length ?? 0}
+          message={manifest?.message}
+          beam
+          online
+        />
 
-            <div className="mx-auto mt-6 flex max-w-md items-center justify-between px-1">
-              <p className="eyebrow">
-                {status === "extracting" ? COPY.signalLocked : "Signal locked. Ready."}
-              </p>
-              <span className="inline-flex items-center gap-1.5 text-[11px] text-fg-3">
-                Signal <SignalBars level={signal} />
-              </span>
-            </div>
+        <div className="mx-auto mt-6 flex max-w-md items-center justify-between px-1">
+          <p className="eyebrow inline-flex items-center gap-1.5">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#00c8ff] opacity-70" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[#00c8ff]" />
+            </span>
+            Live · streaming from sender
+          </p>
+          <span className="mono text-[11px] text-fg-3">{formatBytes(totalSize)}</span>
+        </div>
 
-            <div className="mx-auto mt-3 max-w-md space-y-2">
-              {manifest?.files.map((f) => {
-                const st = fstates[f.id] ?? { progress: 0, state: "queued" as FileCardState };
-                return (
+        <div className="mx-auto mt-3 max-w-md space-y-2">
+          {manifest?.files.map((f) => {
+            const st = fstates[f.id] ?? { progress: 0, state: "queued" as FileCardState };
+            const done = st.state === "complete";
+            return (
+              <div key={f.id} className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
                   <FileCard
-                    key={f.id}
                     name={f.name}
                     size={f.size}
                     mime={f.mime}
@@ -239,17 +188,36 @@ function BeamRecipientInner() {
                     speed={st.speed}
                     verified={st.verified}
                   />
-                );
-              })}
-              <p className="mono px-1 pt-1 text-[11px] text-fg-3">{formatBytes(totalSize)} total · peer-to-peer · DTLS encrypted</p>
-            </div>
-          </motion.div>
+                </div>
+                <Button
+                  variant={done ? "glass" : "primary"}
+                  size="icon"
+                  aria-label={done ? "Downloaded" : "Download"}
+                  disabled={st.state === "extracting"}
+                  onClick={() => downloadOne(f)}
+                >
+                  <Icon name={done ? "Check" : "Download"} className="h-4 w-4" />
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+
+        {manifest && manifest.files.length > 0 && (
+          <div className="mx-auto mt-5 max-w-md">
+            <Button variant="primary" size="lg" className="w-full" loading={anyActive} disabled={allDone} onClick={downloadAll} icon="Download">
+              {allDone ? "All files downloaded" : manifest.files.length > 1 ? "Download all" : "Download"}
+            </Button>
+            <p className="mono mt-2 text-center text-[11px] text-fg-3">
+              peer-to-peer · DTLS encrypted · nothing stored in the cloud
+            </p>
+          </div>
         )}
-      </AnimatePresence>
+      </motion.div>
 
-      {status === "ready" && <ExtractCTA label={COPY.extract} onClick={startExtract} />}
-
-      <RecipientFooter verified={status === "complete"} />
+      <RecipientFooter verified={allDone} />
     </RecipientFrame>
   );
 }
+
+void COPY;
