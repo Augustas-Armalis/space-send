@@ -11,22 +11,6 @@ import { OrbAvatar } from "@/components/ui/OrbAvatar";
 import { useStash } from "@/store/stash";
 import { Titlebar } from "./Titlebar";
 import { useEffect, useRef } from "react";
-import { shortId } from "@/lib/ids";
-
-const ADJECTIVES = ["nova", "orbit", "comet", "pulsar", "echo", "drift", "lumen", "stellar", "vega", "halo", "ion", "quasar", "atlas", "zephyr"];
-const NOUNS = ["signal", "vector", "probe", "beam", "pilot", "scout", "ranger", "voyager", "rover", "cipher", "phantom", "ghost", "nomad", "spark"];
-
-function pick<T>(arr: T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
-function generateAnonProfile() {
-  const adj = pick(ADJECTIVES);
-  const noun = pick(NOUNS);
-  const tag = `${adj}_${noun}_${shortId().slice(0, 4)}`.slice(0, 20);
-  const name = `${adj.charAt(0).toUpperCase()}${adj.slice(1)} ${noun.charAt(0).toUpperCase()}${noun.slice(1)}`;
-  return { tag, name };
-}
 
 function isActive(pathname: string, href: string) {
   if (href === "/") return pathname === "/";
@@ -143,8 +127,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!hydrated || onboarded || autoOnboarding.current) return;
     autoOnboarding.current = true;
-    const { tag, name } = generateAnonProfile();
-    void complete({ tag, name, avatar: null });
+    void complete({ tag: "anon", name: "Anonymous", avatar: null });
   }, [hydrated, onboarded, complete]);
 
   return (
