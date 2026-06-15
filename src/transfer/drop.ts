@@ -114,13 +114,28 @@ function uploadToCloud(
  *  THROWS if it ultimately fails, instead of silently swallowing the error. */
 export async function putManifest(record: DropRecord, signal?: AbortSignal): Promise<void> {
   if (!hasCloud()) return;
+  // Slim the manifest before it goes to R2. The big offender is a base64
+  // avatar data URL in `sender.avatar` (can be hundreds of KB) — recipients
+  // render initials, so we never ship the image. We also drop any local-only
+  // bookkeeping that a recipient on another device doesn't need.
+  const lean: DropRecord = {
+    ...record,
+    sender: record.sender
+      ? {
+          tag: record.sender.tag ?? null,
+          name: record.sender.name ?? "",
+          avatar: record.sender.avatar && record.sender.avatar.startsWith("data:") ? null : record.sender.avatar ?? null,
+        }
+      : record.sender,
+  };
+  const body = JSON.stringify(lean);
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const res = await fetch(dropManifestUrl(record.id), {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(record),
+        body,
         signal,
       });
       if (res.ok) return;
