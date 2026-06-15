@@ -6,6 +6,10 @@ import { Providers } from "@/components/shell/Providers";
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
 const jetbrains = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jetbrains", display: "swap" });
 
+// On GitHub Pages the site is served under /<repo>/, so static asset paths need
+// that prefix or they 404 (which is why the favicon + manifest went missing).
+const BP = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+
 export const metadata: Metadata = {
   title: "Space Send — Transmit anything. Instantly.",
   description:
@@ -20,8 +24,8 @@ export const metadata: Metadata = {
   },
   twitter: { card: "summary_large_image", title: "Space Send", description: "Transmit anything. Instantly." },
   appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Space Send" },
-  manifest: "/manifest.webmanifest",
-  icons: { icon: "/icon.svg", apple: "/icon.svg" },
+  manifest: `${BP}/manifest.webmanifest`,
+  icons: { icon: `${BP}/icon.svg`, apple: `${BP}/icon.svg` },
 };
 
 export const viewport: Viewport = {
