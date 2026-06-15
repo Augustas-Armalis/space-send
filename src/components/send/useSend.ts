@@ -100,14 +100,24 @@ export function useSend() {
     setPhase("working");
     setAurora(true, 0.5);
     const metas: FileMeta[] = [];
+    // Track real byte progress across the whole batch so the working indicator
+    // never freezes at 0% on a single big file.
+    const grandTotal = files.reduce((a, f) => a + f.meta.size, 0);
+    let priorBytes = 0;
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
       patchFile(f.meta.id, { state: "uploading" });
-      setWorking({ label: `Dropping ${f.meta.name}`, progress: i / files.length });
+      setWorking({ label: `Dropping ${f.meta.name}`, progress: priorBytes / Math.max(1, grandTotal) });
       await uploadFile(id, f.meta, f.file, (p) => {
-        patchFile(f.meta.id, { progress: p.loaded / p.total, speed: p.speed });
+        const fileFrac = p.loaded / p.total;
+        patchFile(f.meta.id, { progress: fileFrac, speed: p.speed });
+        setWorking({
+          label: `Dropping ${f.meta.name}`,
+          progress: (priorBytes + p.loaded) / Math.max(1, grandTotal),
+        });
         setAurora(true, intensityFromSpeed(p.speed));
       });
+      priorBytes += f.meta.size;
       // Integrity hash
       try {
         f.meta.hash = await hashFile(f.file);
