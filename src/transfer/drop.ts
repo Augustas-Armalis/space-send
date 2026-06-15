@@ -108,15 +108,31 @@ function uploadToCloud(
   });
 }
 
+/** Upload the manifest to R2 with retries. The manifest is what makes the
+ *  share link work for anyone other than the sender — if it doesn't land, the
+ *  recipient page can't find the Drop. So this RETRIES 3x with backoff and
+ *  THROWS if it ultimately fails, instead of silently swallowing the error. */
 export async function putManifest(record: DropRecord, signal?: AbortSignal): Promise<void> {
   if (!hasCloud()) return;
-  const res = await fetch(dropManifestUrl(record.id), {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(record),
-    signal,
-  });
-  if (!res.ok) throw new Error(`Manifest upload failed: ${res.status}`);
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(dropManifestUrl(record.id), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(record),
+        signal,
+      });
+      if (res.ok) return;
+      lastErr = new Error(`Manifest upload failed: ${res.status} ${await res.text()}`);
+    } catch (e) {
+      lastErr = e;
+      if (signal?.aborted) throw e;
+    }
+    // Linear backoff: 500ms, 1500ms before the next try.
+    await new Promise((r) => setTimeout(r, 500 + attempt * 1000));
+  }
+  throw lastErr ?? new Error("Manifest upload failed");
 }
 
 export async function fetchManifest(dropId: string): Promise<DropRecord | null> {

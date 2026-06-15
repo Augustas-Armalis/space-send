@@ -151,20 +151,14 @@ export function useSend() {
       localAvailable: true,
     };
     addDrop(record);
-    // Show a clear "Finalizing" beat between 100% bytes and the share screen so
-    // users don't think the upload froze while the worker writes to R2 and the
-    // manifest goes up.
-    setWorking({ label: "Finalizing", progress: 1 });
-    // The manifest PUT used to silently hang the UI when the cloud was slow or
-    // unreachable. Now it's bounded by an 8s timeout — if it doesn't land, we
-    // still surface the share link (the recipient page can retry, and same-
-    // browser viewers can read from the local store).
-    try {
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 8000);
-      await putManifest(record, ac.signal).finally(() => clearTimeout(timer));
-    } catch (e) {
-      console.warn("[Space Send] manifest upload skipped:", e);
+    // The manifest is what makes the share link work for everyone OTHER than
+    // the sender. Without it, recipients see "Drop not found" because they
+    // have no local record to fall back on. So this is REQUIRED for cloud
+    // Drops — if it fails after retries, we throw and surface the error
+    // instead of giving the user a share link that only works for themselves.
+    if (hasCloud()) {
+      setWorking({ label: "Finalizing — publishing manifest", progress: 1 });
+      await putManifest(record);
     }
     addTrail({
       id: shortId(),
