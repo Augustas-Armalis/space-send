@@ -349,7 +349,11 @@ export default function VaultPage() {
     return active.filter((d) => d.downloads === 0 && now - d.createdAt > STALE_MS);
   }, [active]);
 
-  const ratio = QUOTA > 0 ? usedBytes / QUOTA : 0;
+  // Prefer the live R2 footprint (shared, authoritative); fall back to the
+  // local managed estimate until the first /usage round-trip lands.
+  const liveBytes = cloud?.bytes ?? usedBytes;
+  const liveMax = cloud?.max ?? QUOTA;
+  const ratio = liveMax > 0 ? liveBytes / liveMax : 0;
   const nearFull = ratio > 0.95;
   const approaching = ratio > 0.8 && !nearFull;
 
@@ -370,6 +374,23 @@ export default function VaultPage() {
       "Orbit cleared",
       `${stale.length} ${pluralize(stale.length, "file")} swept to trash.`,
     );
+  };
+
+  const [wiping, setWiping] = useState(false);
+  const wipeAll = async () => {
+    if (typeof window !== "undefined" && !window.confirm("Wipe ALL files from shared cloud storage? This removes everyone's Drops and cannot be undone.")) return;
+    setWiping(true);
+    try {
+      await fetch(`${CLOUD_ORIGIN}/wipe`, { method: "POST" });
+      localDrops.forEach((d) => removeDrop(d.id));
+      setCloudDrops([]);
+      setCloud((c) => (c ? { ...c, bytes: 0, drops: 0 } : c));
+      toast.warning("Storage wiped", "Every file was purged from cloud storage.");
+    } catch {
+      toast.warning("Wipe failed", "Could not reach storage. Try again.");
+    } finally {
+      setWiping(false);
+    }
   };
 
   return (
@@ -438,46 +459,46 @@ export default function VaultPage() {
         ))}
       </div>
 
-      {/* HERO */}
+      {/* HERO — live shared R2 footprint, big and unambiguous. */}
       <motion.div variants={fadeUp} initial="hidden" animate="show">
         <GlassPanel glow className="mb-6 p-6 sm:p-8">
           <div className="flex flex-col items-center gap-8 sm:flex-row sm:items-center sm:gap-10">
-            <StorageRing used={usedBytes} total={QUOTA} size={140} />
+            <StorageRing used={liveBytes} total={liveMax} size={140} />
             <div className="flex-1">
-              <div className="grid grid-cols-2 gap-x-8 gap-y-6 sm:grid-cols-3">
-                <HeroStat label="Used" value={usedBytes} format={(n) => formatBytes(n)} />
-                <HeroStat label="Files" value={active.length} />
-                <HeroStat
-                  label="Extractions"
-                  value={extractions}
-                  accent="text-cyan"
-                />
+              {/* The big number */}
+              <div className="flex items-end gap-2">
+                <span className="font-heading text-4xl font-semibold tracking-tight text-fg tabular-nums sm:text-5xl">
+                  {formatBytes(liveBytes)}
+                </span>
+                <span className="mb-1 mono text-sm text-fg-3">/ {formatBytes(liveMax)}</span>
               </div>
-              <div className="mono mt-6 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] tabular-nums text-fg-3">
-                <span className="inline-flex items-center gap-1.5">
-                  <Icon name="Clock" className="h-3 w-3" />
-                  Recalculated just now
+              <div className="mono mt-1 flex items-center gap-2 text-[11px] text-fg-3">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#00ff88] opacity-60" />
+                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[#00ff88]" />
                 </span>
-                <span>·</span>
-                <span>
-                  {formatBytes(QUOTA - usedBytes)} free in orbit
-                </span>
+                Live · shared cloud storage · {formatBytes(liveMax - liveBytes)} free
               </div>
 
-              {/* Live R2 footprint — what's actually sitting in Cloudflare. */}
-              {cloud && (
-                <div className="mt-3 inline-flex items-center gap-2 rounded-xl border border-white/8 bg-white/[0.02] px-3 py-1.5">
-                  <span className="relative flex h-1.5 w-1.5">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#00ff88] opacity-60" />
-                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[#00ff88]" />
-                  </span>
-                  <span className="mono text-[11px] text-fg-2">
-                    R2: <span className="text-fg">{formatBytes(cloud.bytes)}</span>
-                    <span className="text-fg-3"> / {formatBytes(cloud.max)}</span>
-                    <span className="ml-2 text-fg-3">· {cloud.drops} {pluralize(cloud.drops, "drop")}</span>
-                  </span>
-                </div>
-              )}
+              <div className="mt-5 grid grid-cols-3 gap-x-6 gap-y-4">
+                <HeroStat label="Files" value={active.length} />
+                <HeroStat label="In trash" value={trashed.length} accent="text-fg-3" />
+                <HeroStat label="Extractions" value={extractions} accent="text-cyan" />
+              </div>
+
+              <div className="mt-5 flex flex-wrap items-center gap-2">
+                <Button variant="destructive" size="sm" loading={wiping} onClick={wipeAll} icon="Trash2">
+                  Wipe all
+                </Button>
+                <a
+                  href="https://dash.cloudflare.com/?to=/:account/r2/default/buckets/space-send-drops"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-1.5 text-xs text-fg-3 transition-colors hover:text-fg-2"
+                >
+                  <Icon name="Globe" className="h-3.5 w-3.5" /> Open R2 dashboard
+                </a>
+              </div>
 
               <AnimatePresence>
                 {(approaching || nearFull) && (
@@ -494,7 +515,7 @@ export default function VaultPage() {
                     )}
                   >
                     <Icon name="AlertTriangle" className="h-3.5 w-3.5" />
-                    {nearFull ? "Vault near full" : "Approaching capacity"}
+                    {nearFull ? "Storage near full — wipe or delete some files" : "Approaching capacity"}
                   </motion.div>
                 )}
               </AnimatePresence>
