@@ -292,6 +292,7 @@ export default function VaultPage() {
   const [origin, setOrigin] = useState("");
   const [cleanupDismissed, setCleanupDismissed] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
+  const [wiping, setWiping] = useState(false);
   // Live R2 usage — pulled from the Worker's /usage endpoint so the user sees
   // the bucket-wide footprint (not just their local Drops), refreshed on focus.
   const [cloud, setCloud] = useState<{ bytes: number; max: number; drops: number } | null>(null);
@@ -376,7 +377,6 @@ export default function VaultPage() {
     );
   };
 
-  const [wiping, setWiping] = useState(false);
   const wipeAll = async () => {
     if (typeof window !== "undefined" && !window.confirm("Wipe ALL files from shared cloud storage? This removes everyone's Drops and cannot be undone.")) return;
     setWiping(true);

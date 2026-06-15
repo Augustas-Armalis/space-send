@@ -47,7 +47,7 @@ export const BEAM_DURATIONS = [
 ] as const;
 
 export const MANAGED_QUOTA_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB free tier
-export const FREE_PER_FILE_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB per file
+export const FREE_PER_FILE_BYTES = 4 * 1024 * 1024 * 1024; // 4 GB per file (Drop, via multipart)
 
 /** The product's whole vocabulary — surfaced everywhere. */
 export const VOCAB = {
