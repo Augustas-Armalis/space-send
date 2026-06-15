@@ -136,10 +136,7 @@ export interface NavItem {
 export const NAV: NavItem[] = [
   { id: "send", label: "Send", href: "/", icon: "Rocket" },
   { id: "vault", label: "Vault", href: "/vault", icon: "Database" },
-  { id: "beams", label: "Beams", href: "/beams", icon: "Radio" },
   { id: "pools", label: "Pools", href: "/pools", icon: "Waves" },
-  { id: "crew", label: "Crew", href: "/crew", icon: "Users" },
-  { id: "trail", label: "Trail", href: "/trail", icon: "Activity" },
   { id: "settings", label: "Settings", href: "/settings", icon: "Settings" },
 ];
 
@@ -147,6 +144,6 @@ export const NAV: NavItem[] = [
 export const MOBILE_NAV: NavItem[] = [
   { id: "send", label: "Send", href: "/", icon: "Rocket" },
   { id: "vault", label: "Vault", href: "/vault", icon: "Database" },
-  { id: "beams", label: "Beams", href: "/beams", icon: "Radio" },
-  { id: "crew", label: "Crew", href: "/crew", icon: "Users" },
+  { id: "pools", label: "Pools", href: "/pools", icon: "Waves" },
+  { id: "settings", label: "Settings", href: "/settings", icon: "Settings" },
 ];
