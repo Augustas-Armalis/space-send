@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/cn";
 import { Icon } from "@/components/ui/Icon";
@@ -9,8 +9,9 @@ import { Segmented } from "@/components/ui/Segmented";
 import { MagneticButton } from "@/components/ui/MagneticButton";
 import { Orb } from "@/components/brand/Orb";
 import { AnimatedNumber } from "@/components/ui/AnimatedNumber";
-import { COPY, EXPIRY_OPTIONS, FREE_PER_FILE_BYTES } from "@/lib/constants";
+import { COPY, EXPIRY_OPTIONS } from "@/lib/constants";
 import { formatBytes } from "@/lib/format";
+import { CLOUD_ORIGIN, HAS_CLOUD } from "@/lib/config";
 import type { useSend } from "./useSend";
 
 type Controller = ReturnType<typeof useSend>;
@@ -21,6 +22,21 @@ export function SendComposer({ s }: { s: Controller }) {
   const dragCount = useRef(0);
   const [showMessage, setShowMessage] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
+  // Live remaining cloud space — a Drop is capped only by what's free.
+  const [cloudFree, setCloudFree] = useState<number | null>(null);
+  useEffect(() => {
+    if (!HAS_CLOUD) return;
+    let cancelled = false;
+    fetch(`${CLOUD_ORIGIN}/usage`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled && d) setCloudFree(Math.max(0, (d.max ?? 0) - (d.bytes ?? 0)));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length) s.addFiles(e.target.files);
@@ -98,7 +114,13 @@ export function SendComposer({ s }: { s: Controller }) {
             </div>
             <div>
               <p className="text-lg font-medium text-fg">{COPY.dropZoneEmpty}</p>
-              <p className="mt-1 text-sm text-fg-3">{COPY.dropZoneSub(formatBytes(FREE_PER_FILE_BYTES, 0))}</p>
+              <p className="mt-1 text-sm text-fg-3">
+                {s.mode === "beam"
+                  ? "No size limit — streamed live from this device"
+                  : cloudFree != null
+                    ? `Up to ${formatBytes(cloudFree)} of free cloud space`
+                    : "Limited only by your free cloud space"}
+              </p>
             </div>
           </button>
         ) : (

@@ -44,7 +44,10 @@ const GB = 1024 * MB;
 
 const BUCKET_LIMIT_BYTES = 9 * GB;   // 9 GB — 1 GB margin under R2's 10 GB free tier
 const MAX_FILE_BYTES = 95 * MB;      // per single-PUT file (Workers free body limit ~100 MB)
-const MAX_DROP_BYTES = 4 * GB;       // per Drop (large files go via multipart, in 90 MB parts)
+// A Drop is limited only by REMAINING bucket space — no artificial per-drop
+// ceiling. (Beam is pure P2P and has no size limit at all.) The reserve still
+// rejects anything that would push total usage past BUCKET_LIMIT_BYTES.
+const MAX_DROP_BYTES = BUCKET_LIMIT_BYTES;
 const MAX_MANIFEST_BYTES = 512 * KB;
 
 const USAGE_KEY = "global";
