@@ -15,9 +15,15 @@ import { sha256Hex } from "@/lib/hash";
      transfer never has to fit in RAM.
    ========================================================================== */
 
-const CHUNK = 64 * 1024;            // 64 KB — safe across browsers
-const HIGH_WATER = 8 * 1024 * 1024; // pause sending above 8 MB buffered
-const LOW_WATER = 1 * 1024 * 1024;
+// Throughput tuning. The old 64 KB chunks + 8 MB buffer left the pipe starved.
+// We now send big chunks (clamped to the SCTP max-message-size per connection),
+// read the file in large blocks (one arrayBuffer() per 16 MB instead of per
+// chunk), and keep up to 64 MB in flight before pausing. On a fast LAN/Wi-Fi
+// this is several times faster.
+const TARGET_CHUNK = 256 * 1024;       // desired per-message size (clamped below)
+const HIGH_WATER = 64 * 1024 * 1024;   // keep up to 64 MB buffered before pausing
+const LOW_WATER = 16 * 1024 * 1024;    // resume once it drains under 16 MB
+const READ_BLOCK = 16 * 1024 * 1024;   // read the file 16 MB at a time
 const STREAM_TO_DISK_MIN = 64 * 1024 * 1024; // use the save-picker for files ≥ 64 MB
 
 export interface HostFile {
@@ -227,6 +233,10 @@ export class BeamHost {
     if (!p || !p.channel) return;
     const channel = p.channel;
     channel.bufferedAmountLowThreshold = LOW_WATER;
+    // Send the largest message the SCTP transport allows (clamped to our
+    // target). Bigger messages = far less per-chunk overhead.
+    const maxMsg = (p.pc.sctp?.maxMessageSize as number | undefined) || TARGET_CHUNK;
+    const chunkSize = Math.max(16 * 1024, Math.min(TARGET_CHUNK, maxMsg));
     const wanted = this.files.filter((f) => fileIds.includes(f.meta.id));
 
     for (const { meta, file } of wanted) {
@@ -235,30 +245,37 @@ export class BeamHost {
       let offset = 0;
       let lastThrottleTs = Date.now();
       let sentSinceThrottle = 0;
+      // Read the file one big block at a time, then fire many large chunks from
+      // that in-memory block with no per-chunk await for disk I/O.
       while (offset < file.size) {
         if (this.closed || channel.readyState !== "open") return;
-        const slice = file.slice(offset, Math.min(offset + CHUNK, file.size));
-        const buf = await slice.arrayBuffer();
-        if (channel.bufferedAmount > HIGH_WATER) await this.waitDrain(channel);
-        if (this.throttle > 0) {
-          sentSinceThrottle += buf.byteLength;
-          const elapsed = (Date.now() - lastThrottleTs) / 1000;
-          const allowed = this.throttle * elapsed;
-          if (sentSinceThrottle > allowed) {
-            const waitMs = ((sentSinceThrottle - allowed) / this.throttle) * 1000;
-            await new Promise((r) => setTimeout(r, Math.min(250, waitMs)));
+        const block = await file.slice(offset, Math.min(offset + READ_BLOCK, file.size)).arrayBuffer();
+        let bp = 0;
+        while (bp < block.byteLength) {
+          if (this.closed || channel.readyState !== "open") return;
+          const buf = block.slice(bp, Math.min(bp + chunkSize, block.byteLength));
+          if (channel.bufferedAmount > HIGH_WATER) await this.waitDrain(channel);
+          if (this.throttle > 0) {
+            sentSinceThrottle += buf.byteLength;
+            const elapsed = (Date.now() - lastThrottleTs) / 1000;
+            const allowed = this.throttle * elapsed;
+            if (sentSinceThrottle > allowed) {
+              const waitMs = ((sentSinceThrottle - allowed) / this.throttle) * 1000;
+              await new Promise((r) => setTimeout(r, Math.min(250, waitMs)));
+            }
+            if (elapsed > 1) {
+              lastThrottleTs = Date.now();
+              sentSinceThrottle = 0;
+            }
           }
-          if (elapsed > 1) {
-            lastThrottleTs = Date.now();
-            sentSinceThrottle = 0;
+          try {
+            channel.send(buf);
+          } catch {
+            return;
           }
+          bp += buf.byteLength;
+          offset += buf.byteLength;
         }
-        try {
-          channel.send(buf);
-        } catch {
-          return;
-        }
-        offset += buf.byteLength;
       }
       this.sendCtrl(channel, { t: "file-end", id: meta.id, hash: meta.hash });
     }
@@ -575,8 +592,15 @@ export class BeamReceiver {
     void this.active.sink.write(buf);
     this.active.received += buf.byteLength;
     this.cb.onFileProgress?.(this.active.fileId, this.active.received, this.active.size, this.instSpeed(this.active.received));
-    this.send({ t: "progress", id: this.active.fileId, received: this.active.received });
+    // Report progress back to the host at most ~5×/sec, not per chunk — at high
+    // speed a per-chunk reverse message would clog the channel and slow things.
+    const now = Date.now();
+    if (now - this.lastProgressSent > 200) {
+      this.lastProgressSent = now;
+      this.send({ t: "progress", id: this.active.fileId, received: this.active.received });
+    }
   }
+  private lastProgressSent = 0;
 
   private instSpeed(received: number): number {
     const now = Date.now();

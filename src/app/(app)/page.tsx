@@ -81,7 +81,7 @@ export default function LandingPage() {
           transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
           className="order-2 w-full justify-self-center xl:order-none xl:justify-self-end"
         >
-          <GlassPanel tilt glow className="w-full p-5 sm:p-6">
+          <GlassPanel glow className="w-full p-5 sm:p-6">
             {/* Plain phase swap. We deliberately avoid AnimatePresence
                 mode="wait" + exit choreography here: with the shared send-orb
                 layoutId it could jam mid-transition and leave the share card

@@ -161,11 +161,14 @@ function BeamLivePanel({
   senderAvatar: string | null;
 }) {
   const [throttle, setThrottle] = useState(0);
+  const [customMbps, setCustomMbps] = useState(0);
+  const [customOn, setCustomOn] = useState(false);
   const recipients = s.recipients;
   const addRef = useRef<HTMLInputElement>(null);
 
   const applyThrottle = (mbps: number) => {
     setThrottle(mbps);
+    setCustomOn(false);
     s.host.current?.setThrottle(mbps === 0 ? 0 : mbps * 1024 * 1024);
   };
 
@@ -250,19 +253,44 @@ function BeamLivePanel({
           <Icon name="Gauge" className="h-3.5 w-3.5" />
           <SpeedGauge bytesPerSec={s.aggregateSpeed} />
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] text-fg-3">Limit output</span>
-          <select
-            value={throttle}
-            onChange={(e) => applyThrottle(Number(e.target.value))}
-            className="mono h-7 rounded-lg border border-white/10 bg-white/[0.04] px-2 text-[11px] text-fg outline-none"
-          >
-            <option value={0}>Max</option>
-            <option value={1}>1 MB/s</option>
-            <option value={5}>5 MB/s</option>
-            <option value={10}>10 MB/s</option>
-          </select>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] text-fg-3">Limit</span>
+          {[0, 5, 25, 100].map((v) => (
+            <button
+              key={v}
+              onClick={() => applyThrottle(v)}
+              className={cn(
+                "mono h-7 rounded-lg border px-2 text-[11px] transition-colors",
+                throttle === v && !customOn
+                  ? "border-[#00c8ff]/40 bg-[#00c8ff]/[0.1] text-fg"
+                  : "border-white/10 bg-white/[0.04] text-fg-3 hover:text-fg-2",
+              )}
+            >
+              {v === 0 ? "Max" : v}
+            </button>
+          ))}
         </div>
+      </div>
+
+      {/* Custom bitrate — set any MB/s ceiling, or leave on Max for full speed. */}
+      <div className="flex items-center gap-2 rounded-xl border border-white/8 bg-white/[0.02] px-3 py-2">
+        <span className="text-[11px] text-fg-3">Custom limit</span>
+        <input
+          type="number"
+          min={0}
+          step={1}
+          placeholder="MB/s"
+          value={customOn ? customMbps : ""}
+          onChange={(e) => {
+            const v = Number(e.target.value);
+            setCustomMbps(e.target.value === "" ? 0 : v);
+            setCustomOn(e.target.value !== "");
+            setThrottle(-1);
+            s.host.current?.setThrottle(e.target.value === "" || v <= 0 ? 0 : v * 1024 * 1024);
+          }}
+          className="mono h-7 w-20 rounded-lg border border-white/10 bg-white/[0.04] px-2 text-[12px] text-fg outline-none focus:border-[#00c8ff]/40"
+        />
+        <span className="mono text-[11px] text-fg-3">MB/s {customOn && customMbps > 0 ? "" : "· Max"}</span>
       </div>
 
       <Button
