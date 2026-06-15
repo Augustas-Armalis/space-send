@@ -2,7 +2,7 @@
 
 import {
   Activity, AlertTriangle, ArrowLeft, ArrowRight, Bell, Check, CheckCheck, ChevronDown,
-  ChevronRight, CircleDot, Clock, Cloud, CloudUpload, Copy, Database, Download, Eye, EyeOff,
+  ChevronRight, CircleDot, Clock, Cloud, CloudUpload, Copy, Cpu, Database, Download, Eye, EyeOff,
   File as FileIcon, FileText, Film, Flame, Folder, FolderArchive, FolderPlus, Gauge, Globe,
   HardDrive, Image as ImageIcon, Info, KeyRound, Link2, Lock, LogOut, MapPin, Maximize2, Menu,
   MoreHorizontal, Music, Pause, Play, Plus, QrCode, Radio, RefreshCw, Repeat, Rocket, Search,
@@ -12,7 +12,7 @@ import {
 
 const MAP = {
   Activity, AlertTriangle, ArrowLeft, ArrowRight, Bell, Check, CheckCheck, ChevronDown,
-  ChevronRight, CircleDot, Clock, Cloud, CloudUpload, Copy, Database, Download, Eye, EyeOff,
+  ChevronRight, CircleDot, Clock, Cloud, CloudUpload, Copy, Cpu, Database, Download, Eye, EyeOff,
   FileIcon, FileText, Film, Flame, Folder, FolderArchive, FolderPlus, Gauge, Globe, HardDrive,
   ImageIcon, Info, KeyRound, Link2, Lock, LogOut, MapPin, Maximize2, Menu, MoreHorizontal,
   Music, Pause, Play, Plus, QrCode, Radio, RefreshCw, Repeat, Rocket, Search, Send, Settings,

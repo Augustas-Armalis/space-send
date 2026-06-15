@@ -63,10 +63,14 @@ export default {
       return cors(new Response(JSON.stringify({ ok: true, service: "space-send" }), json()));
     }
 
-    // Usage telemetry — handy for the UI / debugging.
+    // Usage telemetry — handy for the UI / debugging. We must reconstruct the
+    // response: a Durable Object's returned Response has immutable headers, so
+    // cors()'s header .set() would throw (Workers error 1101).
     if (url.pathname === "/usage" && request.method === "GET") {
       const stub = env.USAGE.get(env.USAGE.idFromName(USAGE_KEY));
-      return cors(await stub.fetch("https://usage/read"));
+      const r = await stub.fetch("https://usage/read");
+      const body = await r.text();
+      return cors(new Response(body, { status: r.status, headers: { "content-type": "application/json" } }));
     }
 
     // 1. Beam signaling (WebSocket → Durable Object)

@@ -71,7 +71,10 @@ function BeamRecipientInner() {
       onManifest: (m) => {
         setManifest(m);
         setFstates(Object.fromEntries(m.files.map((f) => [f.id, { progress: 0, state: "queued" as FileCardState }])));
-        setStatus("ready");
+        // Auto-receive starts immediately in the engine, so jump straight to the
+        // live transfer view — no manual "Extract" gate.
+        setStatus("extracting");
+        setAurora(true, 0.3);
       },
       onFileProgress: (fid, received, total, speed) => {
         setFstates((prev) => ({ ...prev, [fid]: { ...prev[fid], progress: received / total, state: "extracting", speed } }));

@@ -18,11 +18,28 @@ export interface HostFile {
   file: File;
 }
 
+/** Live host-side telemetry, emitted ~1 Hz while a Beam is broadcasting. */
+export interface BeamHostStats {
+  /** Peers with an open data channel right now. */
+  connected: number;
+  /** Peers actively pulling bytes (status === "extracting"). */
+  active: number;
+  /** Peers that finished downloading everything. */
+  completed: number;
+  /** Combined outbound throughput across all active peers (bytes/sec). */
+  aggSpeed: number;
+  /** Total bytes buffered in all data channels — a proxy for memory pressure. */
+  bufferedBytes: number;
+  /** 0–1 transmit load: how hard this device is working as the signal tower. */
+  load: number;
+}
+
 export interface HostCallbacks {
   onRecipientJoin?: (r: BeamRecipient) => void;
   onRecipientUpdate?: (id: string, patch: Partial<BeamRecipient>) => void;
   onRecipientLeave?: (id: string) => void;
   onAggregateSpeed?: (bytesPerSec: number) => void;
+  onStats?: (s: BeamHostStats) => void;
   onSpark?: (id: string) => void;
 }
 
@@ -244,8 +261,19 @@ export class BeamHost {
     const tick = () => {
       if (this.closed) return;
       let agg = 0;
+      let connected = 0;
+      let active = 0;
+      let completed = 0;
+      let bufferedBytes = 0;
       this.peers.forEach((p) => {
-        if (p.recipient.status === "extracting") agg += p.recipient.speed;
+        if (p.channel && p.channel.readyState === "open") connected += 1;
+        if (p.recipient.status === "extracting") {
+          active += 1;
+          agg += p.recipient.speed;
+        }
+        if (p.recipient.status === "complete") completed += 1;
+        if (p.channel) bufferedBytes += p.channel.bufferedAmount;
+
         // Refresh signal from RTT when available.
         p.pc.getStats?.().then((stats) => {
           stats.forEach((report) => {
@@ -260,6 +288,16 @@ export class BeamHost {
         });
       });
       this.cb.onAggregateSpeed?.(agg);
+
+      // "Transmit load": how hard this device is working as the signal tower.
+      // Two honest, in-browser-measurable pressures combined: how many peers we
+      // serve at once, and how saturated the outbound buffers are (a stand-in
+      // for memory/CPU pressure — high buffered bytes means we're shovelling).
+      const bufferLoad = Math.min(1, bufferedBytes / (HIGH_WATER * Math.max(1, active)));
+      const peerLoad = Math.min(1, active / 6); // 6 concurrent streams ≈ "busy"
+      const load = Math.min(1, bufferLoad * 0.6 + peerLoad * 0.4);
+
+      this.cb.onStats?.({ connected, active, completed, aggSpeed: agg, bufferedBytes, load });
       this.timer = setTimeout(tick, 1000);
     };
     this.timer = setTimeout(tick, 1000);
@@ -325,6 +363,7 @@ export class BeamReceiver {
     private beamId: string,
     private selfId: string,
     private cb: ReceiverCallbacks = {},
+    private autoStart: boolean = true,
   ) {
     this.sig = createSignaling(beamId, selfId);
     this.pc = new RTCPeerConnection(ICE_CONFIG);
@@ -417,6 +456,9 @@ export class BeamReceiver {
       if (msg.t === "manifest") {
         this.manifest = msg.manifest;
         this.cb.onManifest?.(msg.manifest);
+        // Auto-receive: anyone who opens the link starts pulling immediately,
+        // no "Extract" click. The host streams the moment it sees this.
+        if (this.autoStart) this.startExtract(msg.manifest.files.map((f) => f.id));
       } else if (msg.t === "file-begin") {
         this.current = {
           id: msg.id,

@@ -14,13 +14,12 @@ class_name = "BeamRoom"
 name = "USAGE"
 class_name = "UsageCounter"
 
+# Free Workers plan requires Durable Objects to be SQLite-backed, so both
+# classes are introduced with new_sqlite_classes. (The KV storage API used in
+# the code works identically on SQLite-backed DOs.)
 [[migrations]]
 tag = "v1"
-new_classes = ["BeamRoom"]
-
-[[migrations]]
-tag = "v2"
-new_classes = ["UsageCounter"]
+new_sqlite_classes = ["BeamRoom", "UsageCounter"]
 
 # R2 bucket holds Drop manifests + file bytes for cross-device delivery.
 # Create the bucket first:   wrangler r2 bucket create space-send-drops

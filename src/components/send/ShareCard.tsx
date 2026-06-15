@@ -142,25 +142,37 @@ function BeamLivePanel({
     s.host.current?.setThrottle(mbps === 0 ? 0 : mbps * 1024 * 1024);
   };
 
+  const stats = s.hostStats;
+
   return (
     <div className="mt-6 w-full space-y-4 rounded-2xl border border-white/8 bg-white/[0.02] p-4">
       <div className="flex items-center justify-between">
-        <span className="eyebrow">Live Beam</span>
+        <span className="eyebrow">Signal tower · live</span>
         <span className="mono inline-flex items-center gap-1.5 text-[11px] text-[#00c8ff]">
           <span className="relative flex h-1.5 w-1.5">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#00c8ff] opacity-60" />
             <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[#00c8ff]" />
           </span>
-          {recipients.length > 0 ? `${recipients.length} connected` : COPY.awaitingExtract}
+          {stats.connected > 0 ? `${stats.connected} connected` : COPY.awaitingExtract}
         </span>
       </div>
+
+      {/* Live counters — connected / receiving / done */}
+      <div className="grid grid-cols-3 gap-2">
+        <StatTile label="Connected" value={stats.connected} accent="#00c8ff" />
+        <StatTile label="Receiving" value={stats.active} accent="#00ff88" pulse={stats.active > 0} />
+        <StatTile label="Completed" value={stats.completed} accent="#00e5c8" />
+      </div>
+
+      {/* Transmit load meter — how hard this device is working as the tower */}
+      <LoadMeter load={stats.load} aggSpeed={s.aggregateSpeed} bufferedBytes={stats.bufferedBytes} />
 
       {/* Vector visualization */}
       <BeamVector senderSeed={senderSeed} senderName={senderName} senderAvatar={senderAvatar} recipients={recipients} active={s.aggregateSpeed > 0} />
 
       {recipients.length === 0 ? (
         <p className="text-center text-[13px] text-fg-3">
-          Your device transmits the moment someone Extracts.
+          Keep this tab open. Anyone who opens your link connects and downloads automatically.
         </p>
       ) : (
         <div className="space-y-2">
@@ -200,6 +212,55 @@ function BeamLivePanel({
       >
         Kill Beam
       </Button>
+    </div>
+  );
+}
+
+function StatTile({ label, value, accent, pulse }: { label: string; value: number; accent: string; pulse?: boolean }) {
+  return (
+    <div className="rounded-xl border border-white/8 bg-white/[0.02] px-3 py-2.5 text-center">
+      <div className="flex items-center justify-center gap-1.5">
+        {pulse && (
+          <span className="relative flex h-1.5 w-1.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-70" style={{ background: accent }} />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full" style={{ background: accent }} />
+          </span>
+        )}
+        <span className="mono text-lg font-medium tabular-nums" style={{ color: accent }}>
+          {value}
+        </span>
+      </div>
+      <p className="mt-0.5 text-[10px] uppercase tracking-wide text-fg-3">{label}</p>
+    </div>
+  );
+}
+
+function LoadMeter({ load, aggSpeed, bufferedBytes }: { load: number; aggSpeed: number; bufferedBytes: number }) {
+  const pct = Math.round(load * 100);
+  // Cold→hot as the device works harder: cyan when idle, green mid, amber when saturated.
+  const color = load > 0.8 ? "#ffb020" : load > 0.4 ? "#00ff88" : "#00c8ff";
+  return (
+    <div className="rounded-xl border border-white/8 bg-white/[0.02] px-3.5 py-3">
+      <div className="flex items-center justify-between text-[11px]">
+        <span className="inline-flex items-center gap-1.5 text-fg-3">
+          <Icon name="Cpu" className="h-3.5 w-3.5" /> Transmit load
+        </span>
+        <span className="mono tabular-nums" style={{ color }}>
+          {pct}%
+        </span>
+      </div>
+      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/[0.06]">
+        <motion.div
+          className="h-full rounded-full"
+          style={{ background: color }}
+          animate={{ width: `${Math.max(2, pct)}%` }}
+          transition={{ duration: 0.5, ease: "easeOut" }}
+        />
+      </div>
+      <div className="mono mt-2 flex items-center justify-between text-[10px] text-fg-3">
+        <span>↑ {formatBytes(aggSpeed)}/s out</span>
+        <span>{formatBytes(bufferedBytes)} buffered</span>
+      </div>
     </div>
   );
 }

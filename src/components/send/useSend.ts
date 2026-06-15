@@ -5,7 +5,7 @@ import { shortId, beamId as genBeamId, genKey } from "@/lib/ids";
 import { hashFile } from "@/lib/hash";
 import { makePreview } from "@/lib/files";
 import { uploadFile, putManifest } from "@/transfer/drop";
-import { BeamHost, type HostFile } from "@/transfer/beam";
+import { BeamHost, type HostFile, type BeamHostStats } from "@/transfer/beam";
 import type { BeamManifest, BeamRecipient, DropRecord, FileMeta, LinkOptions } from "@/transfer/types";
 import type { FileCardState } from "@/components/ui/FileCard";
 import { EXPIRY_OPTIONS, type ExpiryId, type TransferMode } from "@/lib/constants";
@@ -43,6 +43,9 @@ export function useSend() {
   const [shareId, setShareId] = useState("");
   const [recipients, setRecipients] = useState<BeamRecipient[]>([]);
   const [aggregateSpeed, setAggregateSpeed] = useState(0);
+  const [hostStats, setHostStats] = useState<BeamHostStats>({
+    connected: 0, active: 0, completed: 0, aggSpeed: 0, bufferedBytes: 0, load: 0,
+  });
   const [working, setWorking] = useState<{ label: string; progress: number }>({ label: "", progress: 0 });
 
   const hostRef = useRef<BeamHost | null>(null);
@@ -195,6 +198,7 @@ export function useSend() {
         setAggregateSpeed(spd);
         setAurora(spd > 0, intensityFromSpeed(spd));
       },
+      onStats: (st) => setHostStats(st),
     });
     hostRef.current = host;
 
@@ -241,6 +245,7 @@ export function useSend() {
     setMessage("");
     setRecipients([]);
     setAggregateSpeed(0);
+    setHostStats({ connected: 0, active: 0, completed: 0, aggSpeed: 0, bufferedBytes: 0, load: 0 });
     setShareUrl("");
     setShareId("");
     setPhase("compose");
@@ -266,7 +271,7 @@ export function useSend() {
     options, setOptions,
     phase, working,
     shareUrl, shareId,
-    recipients, aggregateSpeed,
+    recipients, aggregateSpeed, hostStats,
     host: hostRef,
     submit, reset,
   };

@@ -25,19 +25,14 @@ export const beamHref = (id: string) => `/x/?b=${id}`;
 
 /* ============================================================================
    Cloud backend (signaling + R2 storage). Both endpoints live on the same
-   Cloudflare Worker host. NEXT_PUBLIC_SIGNAL_URL is a wss:// URL — we derive
-   the https:// origin for blob/manifest fetches.
+   Cloudflare Worker host — see src/lib/config.ts for the hardcoded URL.
    ========================================================================== */
 
-const SIGNAL_URL = process.env.NEXT_PUBLIC_SIGNAL_URL ?? "";
+import { CLOUD_ORIGIN, HAS_CLOUD } from "./config";
 
-/** https:// origin of the Worker, or null if no Worker is configured (local-only). */
-export const CLOUD_ORIGIN: string | null = (() => {
-  if (!SIGNAL_URL) return null;
-  return SIGNAL_URL.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://").replace(/\/$/, "");
-})();
+export { CLOUD_ORIGIN };
 
-export const hasCloud = (): boolean => CLOUD_ORIGIN !== null;
+export const hasCloud = (): boolean => HAS_CLOUD;
 
 export const dropManifestUrl = (dropId: string) => `${CLOUD_ORIGIN}/drop/${dropId}/manifest`;
 export const dropFileUrl = (dropId: string, fileId: string) => `${CLOUD_ORIGIN}/drop/${dropId}/file/${fileId}`;

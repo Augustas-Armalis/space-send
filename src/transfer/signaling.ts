@@ -1,4 +1,5 @@
 import type { SignalMsg } from "./types";
+import { SIGNAL_URL, HAS_CLOUD, TURN_URL, TURN_USER, TURN_CRED } from "@/lib/config";
 
 /* ============================================================================
    Signaling transport — brokers SDP/ICE between peers. No file bytes ever pass
@@ -90,18 +91,15 @@ class WebSocketSignaling implements Signaling {
   }
 }
 
-/** True when this build was given a Worker URL — i.e. cross-device Beams are
- *  expected to work. When false, signaling is BroadcastChannel-only, which only
- *  reaches other tabs in the same browser. The UI can use this to give the
- *  recipient an accurate "this site isn't configured for cross-device Beams"
- *  message instead of a confusing "host is offline". */
-export const HAS_CLOUD_SIGNALING: boolean = !!process.env.NEXT_PUBLIC_SIGNAL_URL;
+/** True when a Worker URL is configured — i.e. cross-device Beams work. With
+ *  the hardcoded config this is always true; only a blank override disables it,
+ *  in which case signaling falls back to BroadcastChannel (same browser only). */
+export const HAS_CLOUD_SIGNALING: boolean = HAS_CLOUD;
 
 export function createSignaling(beamId: string, selfId: string): Signaling {
-  const url = process.env.NEXT_PUBLIC_SIGNAL_URL;
-  if (url && typeof WebSocket !== "undefined") {
+  if (SIGNAL_URL && typeof WebSocket !== "undefined") {
     try {
-      return new WebSocketSignaling(url, beamId, selfId);
+      return new WebSocketSignaling(SIGNAL_URL, beamId, selfId);
     } catch {
       /* fall through to local */
     }
@@ -110,19 +108,13 @@ export function createSignaling(beamId: string, selfId: string): Signaling {
 }
 
 /** ICE configuration. STUN is enough for same-machine + many home networks;
-    TURN (documented in README) is the fallback for hostile NATs. */
+    TURN (set in src/lib/config.ts) is the fallback for hostile NATs. */
 export const ICE_CONFIG: RTCConfiguration = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
-    ...(process.env.NEXT_PUBLIC_TURN_URL
-      ? [
-          {
-            urls: process.env.NEXT_PUBLIC_TURN_URL,
-            username: process.env.NEXT_PUBLIC_TURN_USER,
-            credential: process.env.NEXT_PUBLIC_TURN_CRED,
-          } as RTCIceServer,
-        ]
+    ...(TURN_URL
+      ? [{ urls: TURN_URL, username: TURN_USER, credential: TURN_CRED } as RTCIceServer]
       : []),
   ],
 };
