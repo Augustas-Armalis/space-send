@@ -9,8 +9,24 @@ import { Icon } from "@/components/ui/Icon";
 import { Wordmark } from "@/components/brand/Wordmark";
 import { OrbAvatar } from "@/components/ui/OrbAvatar";
 import { useStash } from "@/store/stash";
-import { Onboarding } from "@/components/onboarding/Onboarding";
 import { Titlebar } from "./Titlebar";
+import { useEffect, useRef } from "react";
+import { shortId } from "@/lib/ids";
+
+const ADJECTIVES = ["nova", "orbit", "comet", "pulsar", "echo", "drift", "lumen", "stellar", "vega", "halo", "ion", "quasar", "atlas", "zephyr"];
+const NOUNS = ["signal", "vector", "probe", "beam", "pilot", "scout", "ranger", "voyager", "rover", "cipher", "phantom", "ghost", "nomad", "spark"];
+
+function pick<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function generateAnonProfile() {
+  const adj = pick(ADJECTIVES);
+  const noun = pick(NOUNS);
+  const tag = `${adj}_${noun}_${shortId().slice(0, 4)}`.slice(0, 20);
+  const name = `${adj.charAt(0).toUpperCase()}${adj.slice(1)} ${noun.charAt(0).toUpperCase()}${noun.slice(1)}`;
+  return { tag, name };
+}
 
 function isActive(pathname: string, href: string) {
   if (href === "/") return pathname === "/";
@@ -121,11 +137,15 @@ function BottomTabs() {
 export function AppShell({ children }: { children: React.ReactNode }) {
   const hydrated = useStash((s) => s.hydrated);
   const onboarded = useStash((s) => s.onboarded);
+  const complete = useStash((s) => s.completeOnboarding);
+  const autoOnboarding = useRef(false);
 
-  // Until the Stash hydrates we render the chrome shell to avoid layout shift.
-  if (hydrated && !onboarded) {
-    return <Onboarding />;
-  }
+  useEffect(() => {
+    if (!hydrated || onboarded || autoOnboarding.current) return;
+    autoOnboarding.current = true;
+    const { tag, name } = generateAnonProfile();
+    void complete({ tag, name, avatar: null });
+  }, [hydrated, onboarded, complete]);
 
   return (
     <div className="min-h-dvh">

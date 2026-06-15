@@ -22,3 +22,23 @@ export const poolLink = (id: string) => abs(`/pool/?p=${id}`);
     so these must NOT include BASE_PATH. */
 export const poolHref = (id: string) => `/pool/?p=${id}`;
 export const beamHref = (id: string) => `/x/?b=${id}`;
+
+/* ============================================================================
+   Cloud backend (signaling + R2 storage). Both endpoints live on the same
+   Cloudflare Worker host. NEXT_PUBLIC_SIGNAL_URL is a wss:// URL — we derive
+   the https:// origin for blob/manifest fetches.
+   ========================================================================== */
+
+const SIGNAL_URL = process.env.NEXT_PUBLIC_SIGNAL_URL ?? "";
+
+/** https:// origin of the Worker, or null if no Worker is configured (local-only). */
+export const CLOUD_ORIGIN: string | null = (() => {
+  if (!SIGNAL_URL) return null;
+  return SIGNAL_URL.replace(/^wss:\/\//, "https://").replace(/^ws:\/\//, "http://").replace(/\/$/, "");
+})();
+
+export const hasCloud = (): boolean => CLOUD_ORIGIN !== null;
+
+export const dropManifestUrl = (dropId: string) => `${CLOUD_ORIGIN}/drop/${dropId}/manifest`;
+export const dropFileUrl = (dropId: string, fileId: string) => `${CLOUD_ORIGIN}/drop/${dropId}/file/${fileId}`;
+export const dropPurgeUrl = (dropId: string) => `${CLOUD_ORIGIN}/drop/${dropId}`;

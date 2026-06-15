@@ -2,7 +2,7 @@ name = "space-send-signaling"
 main = "src/index.ts"
 compatibility_date = "2024-11-01"
 
-# The Durable Object that holds one room per Beam.
+# Durable Object holds one room per Beam (WebRTC signaling).
 [[durable_objects.bindings]]
 name = "BEAM_ROOMS"
 class_name = "BeamRoom"
@@ -11,6 +11,11 @@ class_name = "BeamRoom"
 tag = "v1"
 new_classes = ["BeamRoom"]
 
-# Free tier: 100k requests/day — far more than enough for friends-and-family.
-# Deploy:  cd packages/signaling-worker && npm i && npx wrangler deploy
-# Then in apps/web set: NEXT_PUBLIC_SIGNAL_URL = wss://space-send-signaling.<account>.workers.dev
+# R2 bucket holds Drop manifests + file bytes for cross-device delivery.
+# Create the bucket first:   wrangler r2 bucket create space-send-drops
+[[r2_buckets]]
+binding = "DROPS"
+bucket_name = "space-send-drops"
+
+# Deploy: cd packages/signaling-worker && npm i && npx wrangler r2 bucket create space-send-drops && npx wrangler deploy
+# Then in the web app set: NEXT_PUBLIC_SIGNAL_URL = wss://space-send-signaling.<account>.workers.dev

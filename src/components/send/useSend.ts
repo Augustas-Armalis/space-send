@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { shortId, beamId as genBeamId, genKey } from "@/lib/ids";
 import { hashFile } from "@/lib/hash";
 import { makePreview } from "@/lib/files";
-import { uploadFile } from "@/transfer/drop";
+import { uploadFile, putManifest } from "@/transfer/drop";
 import { BeamHost, type HostFile } from "@/transfer/beam";
 import type { BeamManifest, BeamRecipient, DropRecord, FileMeta, LinkOptions } from "@/transfer/types";
 import type { FileCardState } from "@/components/ui/FileCard";
@@ -131,6 +131,11 @@ export function useSend() {
       localAvailable: true,
     };
     addDrop(record);
+    try {
+      await putManifest(record);
+    } catch {
+      /* cloud may be down — local Drop still works in this browser */
+    }
     addTrail({
       id: shortId(),
       type: "drop",

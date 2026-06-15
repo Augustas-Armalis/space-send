@@ -16,7 +16,8 @@ import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
 import { useTransfers } from "@/store/transfers";
 import { useUI } from "@/store/ui";
-import { getDropFile } from "@/transfer/drop";
+import { getDropFile, fetchManifest } from "@/transfer/drop";
+import type { DropRecord } from "@/transfer/types";
 import { sha256Hex } from "@/lib/hash";
 import { downloadBlob, isImage } from "@/lib/files";
 import { formatBytes } from "@/lib/format";
@@ -45,7 +46,10 @@ function DropRecipientInner() {
   const setAurora = useUI((s) => s.setAurora);
   const fireComplete = useUI((s) => s.fireComplete);
 
-  const drop = useMemo(() => drops.find((d) => d.id === id && !d.trashedAt), [drops, id]);
+  const localDrop = useMemo(() => drops.find((d) => d.id === id && !d.trashedAt), [drops, id]);
+  const [remoteDrop, setRemoteDrop] = useState<DropRecord | null>(null);
+  const [fetchingManifest, setFetchingManifest] = useState(false);
+  const drop = localDrop ?? remoteDrop;
 
   const [phase, setPhase] = useState<Phase>("ready");
   const [fstates, setFstates] = useState<Record<string, FState>>({});
@@ -59,7 +63,17 @@ function DropRecipientInner() {
     }
   }, [drop]);
 
-  if (!hydrated) {
+  // If we don't have this Drop locally, try the cloud manifest.
+  useEffect(() => {
+    if (!hydrated || !id || localDrop || remoteDrop || fetchingManifest) return;
+    setFetchingManifest(true);
+    fetchManifest(id).then((m) => {
+      setRemoteDrop(m);
+      setFetchingManifest(false);
+    });
+  }, [hydrated, id, localDrop, remoteDrop, fetchingManifest]);
+
+  if (!hydrated || fetchingManifest) {
     return (
       <RecipientFrame>
         <div className="grid min-h-[50vh] place-items-center text-fg-3">
