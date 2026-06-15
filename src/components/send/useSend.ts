@@ -5,6 +5,7 @@ import { shortId, beamId as genBeamId, genKey } from "@/lib/ids";
 import { hashFile } from "@/lib/hash";
 import { makePreview } from "@/lib/files";
 import { uploadFile, putManifest } from "@/transfer/drop";
+import { hasCloud } from "@/lib/site";
 import { BeamHost, type HostFile, type BeamHostStats } from "@/transfer/beam";
 import type { BeamManifest, BeamRecipient, DropRecord, FileMeta, LinkOptions } from "@/transfer/types";
 import type { FileCardState } from "@/components/ui/FileCard";
@@ -99,6 +100,7 @@ export function useSend() {
     setShareId(id);
     setPhase("working");
     setAurora(true, 0.5);
+    try {
     const metas: FileMeta[] = [];
     // Track real byte progress across the whole batch so the working indicator
     // never freezes at 0% on a single big file.
@@ -118,11 +120,16 @@ export function useSend() {
         setAurora(true, intensityFromSpeed(p.speed));
       });
       priorBytes += f.meta.size;
-      // Integrity hash
-      try {
-        f.meta.hash = await hashFile(f.file);
-      } catch {
-        /* skip */
+      // Integrity hash — kept for the local IDB path so the recipient can
+      // verify byte-for-byte. Skipped on cloud uploads because R2 has its own
+      // checksums and hashing a 50 MB file twice (once on the device, once on
+      // the recipient) hangs slow phones for many seconds.
+      if (!hasCloud()) {
+        try {
+          f.meta.hash = await hashFile(f.file);
+        } catch {
+          /* skip */
+        }
       }
       patchFile(f.meta.id, { state: "complete", progress: 1 });
       metas.push({ ...f.meta });
@@ -144,10 +151,20 @@ export function useSend() {
       localAvailable: true,
     };
     addDrop(record);
+    // Show a clear "Finalizing" beat between 100% bytes and the share screen so
+    // users don't think the upload froze while the worker writes to R2 and the
+    // manifest goes up.
+    setWorking({ label: "Finalizing", progress: 1 });
+    // The manifest PUT used to silently hang the UI when the cloud was slow or
+    // unreachable. Now it's bounded by an 8s timeout — if it doesn't land, we
+    // still surface the share link (the recipient page can retry, and same-
+    // browser viewers can read from the local store).
     try {
-      await putManifest(record);
-    } catch {
-      /* cloud may be down — local Drop still works in this browser */
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 8000);
+      await putManifest(record, ac.signal).finally(() => clearTimeout(timer));
+    } catch (e) {
+      console.warn("[Space Send] manifest upload skipped:", e);
     }
     addTrail({
       id: shortId(),
@@ -165,7 +182,19 @@ export function useSend() {
     setPhase("ready");
     setAurora(false);
     fireComplete();
-  }, [files, expiry, message, totalSize, options, stash.settings.defaultBackend, addDrop, addTrail, patchFile, setAurora, fireComplete]);
+    } catch (e) {
+      // Don't leave the user trapped on the "working" screen. Log the real
+      // reason, mark any in-progress files as failed, and drop back to compose
+      // so they can try again.
+      console.error("[Space Send] Drop failed:", e);
+      const msg = e instanceof Error ? e.message : String(e);
+      setWorking({ label: `Failed — ${msg.slice(0, 80)}`, progress: 0 });
+      files.forEach((f) => patchFile(f.meta.id, { state: "failed" }));
+      setAurora(false);
+      // Auto-return to compose after a beat so the user can retry.
+      setTimeout(() => setPhase("compose"), 2500);
+    }
+  }, [files, expiry, message, totalSize, options, stash.settings.defaultBackend, stash.tag, stash.name, stash.avatar, addDrop, addTrail, patchFile, setAurora, fireComplete]);
 
   const submitBeam = useCallback(async () => {
     const bId = genBeamId();

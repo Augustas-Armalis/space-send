@@ -72,9 +72,13 @@ function uploadToCloud(
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", dropFileUrl(dropId, meta.id));
     xhr.setRequestHeader("x-content-type", meta.mime || "application/octet-stream");
+    // Hard ceiling — if the request hangs (CORS preflight wedge, server stall),
+    // we want to fail loud instead of leaving the UI stuck "at 100%" forever.
+    xhr.timeout = 60_000;
     const started = Date.now();
     let lastLoaded = 0;
     let lastTime = started;
+    let reachedFull = false;
     xhr.upload.onprogress = (e) => {
       if (!e.lengthComputable) return;
       const now = Date.now();
@@ -86,22 +90,31 @@ function uploadToCloud(
         lastTime = now;
       }
       onProgress?.({ fileId: meta.id, loaded: e.loaded, total: e.total, speed });
+      if (e.loaded >= e.total) reachedFull = true;
+    };
+    xhr.upload.onload = () => {
+      // Body is fully sent; server is now writing to R2. Surface that so the UI
+      // can transition from "uploading" to "finalizing" instead of looking stuck.
+      reachedFull = true;
+      onProgress?.({ fileId: meta.id, loaded: file.size, total: file.size, speed: 0 });
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) resolve();
-      else reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`));
+      else reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText || ""}`));
     };
     xhr.onerror = () => reject(new Error("Network error during upload"));
+    xhr.ontimeout = () => reject(new Error(`Upload timed out${reachedFull ? " (server didn't acknowledge)" : ""}`));
     xhr.send(file);
   });
 }
 
-export async function putManifest(record: DropRecord): Promise<void> {
+export async function putManifest(record: DropRecord, signal?: AbortSignal): Promise<void> {
   if (!hasCloud()) return;
   const res = await fetch(dropManifestUrl(record.id), {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(record),
+    signal,
   });
   if (!res.ok) throw new Error(`Manifest upload failed: ${res.status}`);
 }
