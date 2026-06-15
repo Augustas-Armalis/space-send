@@ -1,0 +1,16 @@
+name = "space-send-signaling"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+# The Durable Object that holds one room per Beam.
+[[durable_objects.bindings]]
+name = "BEAM_ROOMS"
+class_name = "BeamRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["BeamRoom"]
+
+# Free tier: 100k requests/day — far more than enough for friends-and-family.
+# Deploy:  cd packages/signaling-worker && npm i && npx wrangler deploy
+# Then in apps/web set: NEXT_PUBLIC_SIGNAL_URL = wss://space-send-signaling.<account>.workers.dev

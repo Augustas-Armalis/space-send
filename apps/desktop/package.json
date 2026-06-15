@@ -1,0 +1,19 @@
+{
+  "name": "@space-send/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Space Send for macOS — a Tauri 2 shell around the same web UI, with native background hosting, prevent-sleep, notifications and Finder drag-and-drop.",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-notification": "^2.0.1",
+    "@tauri-apps/plugin-dialog": "^2.2.0"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@space-send/signaling-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WebRTC signaling relay for Space Send Beams. Brokers SDP/ICE only — no file bytes.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241106.0",
+    "wrangler": "^3.90.0"
+  }
+}

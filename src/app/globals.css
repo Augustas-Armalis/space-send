@@ -1,0 +1,362 @@
+@import "tailwindcss";
+
+/* ============================================================================
+   SPACE SEND — Design System
+   "Transmit anything. Instantly."  ·  Built by Contles
+   The entire palette lives in the cold half of the spectrum:
+   phosphor green → cyan-teal → electric cyan → deep electric blue.
+   No yellow-green, no lime, no warm anything. Ever.
+   ========================================================================== */
+
+@theme {
+  /* — Surfaces — */
+  --color-void: #000000;
+  --color-deep: #080810; /* deep matte black, near-imperceptible blue tint */
+  --color-ink: #04040a;
+  --color-panel: rgba(255, 255, 255, 0.04);
+  --color-panel-2: rgba(255, 255, 255, 0.06);
+  --color-hair: rgba(255, 255, 255, 0.08);
+
+  /* — The Space Send gradient arc (green → blue, never reversed) — */
+  --color-green: #00ff88; /* phosphor green   — Orb core */
+  --color-teal: #00e5c8; /* cyan-teal        — Orb halo */
+  --color-cyan: #00c8ff; /* electric cyan    — Pulse, ✓, Contles dot */
+  --color-blue: #0099ff; /* deep electric    — Signal bars */
+
+  /* — Text — */
+  --color-fg: #ffffff;
+  --color-fg-2: #a0a0a0;
+  --color-fg-3: #5a5a5a;
+
+  /* — Semantic — */
+  --color-amber: #ffb020;
+  --color-danger: #ff4d6a;
+
+  /* — Type — */
+  --font-sans:
+    var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono:
+    var(--font-jetbrains), ui-monospace, "SF Mono", "JetBrains Mono", monospace;
+
+  /* — Motion — */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* — Radii — */
+  --radius-glass: 22px;
+}
+
+:root {
+  /* The signature gradient — referenced by name everywhere */
+  --ss-gradient: linear-gradient(135deg, #00ff88, #00e5c8 38%, #00c8ff 68%, #0099ff);
+  --ss-gradient-soft: linear-gradient(
+    135deg,
+    rgba(0, 255, 136, 0.9),
+    rgba(0, 229, 200, 0.85),
+    rgba(0, 200, 255, 0.85),
+    rgba(0, 153, 255, 0.9)
+  );
+  /* Glow variants */
+  --glow-halo: rgba(0, 229, 200, 0.15);
+  --glow-orb: rgba(0, 255, 136, 0.25);
+  --glow-button: rgba(0, 200, 255, 0.2);
+  --glow-aurora-blue: rgba(0, 153, 255, 0.12);
+  --glow-aurora-green: rgba(0, 255, 136, 0.12);
+
+  --glass-blur: blur(40px) saturate(180%);
+  --font-heading: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  border-color: var(--color-panel-2);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-void);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+  /* The layered deep-space backdrop: matte black with one cold radial bloom */
+  background-image:
+    radial-gradient(120% 80% at 18% -10%, rgba(0, 200, 255, 0.06), transparent 55%),
+    radial-gradient(90% 70% at 100% 0%, rgba(0, 153, 255, 0.05), transparent 50%),
+    linear-gradient(180deg, #080810 0%, #04040a 40%, #000000 100%);
+  background-attachment: fixed;
+}
+
+/* — Scrollbar — */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 200, 255, 0.25);
+  background-clip: content-box;
+}
+
+::selection {
+  background: rgba(0, 200, 255, 0.25);
+  color: #fff;
+}
+
+/* — Focus rings: 2px cyan @ 50% — */
+:focus-visible {
+  outline: 2px solid rgba(0, 200, 255, 0.5);
+  outline-offset: 2px;
+}
+
+/* ===========================================================================
+   Component utilities
+   ========================================================================= */
+
+.glass {
+  background: var(--color-panel);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--color-panel-2);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.05),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+.glass-strong {
+  background: rgba(12, 12, 20, 0.72);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--color-panel-2);
+}
+
+/* Gradient text — reserved for wordmark + hero headings only */
+.gradient-text {
+  background: var(--ss-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.gradient-bg {
+  background: var(--ss-gradient);
+}
+
+.gradient-border {
+  position: relative;
+}
+.gradient-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: var(--ss-gradient);
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* Section header label: 11px, uppercase, tracked */
+.eyebrow {
+  font-size: 11px;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--color-fg-3);
+  font-weight: 500;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===========================================================================
+   Keyframes — the motion signature
+   ========================================================================= */
+
+@keyframes ss-aurora-flow {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
+}
+
+@keyframes ss-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.92;
+  }
+}
+
+@keyframes ss-orb-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  50% {
+    transform: scale(1.04);
+    filter: brightness(1.12);
+  }
+}
+
+@keyframes ss-shimmer {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
+}
+
+@keyframes ss-spin-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ss-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes ss-march {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
+
+@keyframes ss-spark {
+  0% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.6);
+  }
+}
+
+.anim-breathe {
+  animation: ss-breathe 5s ease-in-out infinite;
+}
+.anim-float {
+  animation: ss-float 6s ease-in-out infinite;
+}
+.anim-orb {
+  animation: ss-orb-pulse 3.2s ease-in-out infinite;
+}
+.anim-spin-slow {
+  animation: ss-spin-slow 18s linear infinite;
+}
+
+.shimmer-sweep {
+  position: relative;
+  overflow: hidden;
+}
+.shimmer-sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.13) 50%,
+    transparent 70%
+  );
+  transform: translateX(-120%);
+  animation: ss-shimmer 5s ease-in-out infinite;
+  animation-delay: 1.2s;
+  pointer-events: none;
+}
+
+/* Magnetic CTA glow */
+.cta-glow {
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 8px 40px -8px var(--glow-button),
+    0 0 60px -20px var(--glow-orb);
+}
+
+.text-balance {
+  text-wrap: balance;
+}
+
+/* App regions */
+.no-drag {
+  -webkit-user-drag: none;
+  user-select: none;
+}
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+.titlebar-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Hide scrollbar where we want clean carousels */
+.scrollbar-none {
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* ===========================================================================
+   Reduced motion — kill ambient flourish, keep essential progress
+   ========================================================================= */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .shimmer-sweep::after,
+  .anim-breathe,
+  .anim-float,
+  .anim-orb {
+    animation: none !important;
+  }
+}
