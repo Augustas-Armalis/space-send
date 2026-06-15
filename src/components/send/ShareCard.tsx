@@ -54,9 +54,9 @@ export function ShareCard({ s }: { s: Controller }) {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center text-center">
-      {/* Beam: distinct "you're broadcasting" badge so the host knows their
-          device is the signal tower right now. */}
-      {isBeam && (
+      {/* Mode-specific confirmation badge — gives the user an unambiguous
+          "the upload actually finished" signal at the top of the screen. */}
+      {isBeam ? (
         <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-[#00c8ff]/25 bg-[#00c8ff]/[0.08] px-3 py-1">
           <span className="relative flex h-1.5 w-1.5">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#00c8ff] opacity-70" />
@@ -64,6 +64,18 @@ export function ShareCard({ s }: { s: Controller }) {
           </span>
           <span className="mono text-[10px] uppercase tracking-wider text-[#00c8ff]">Broadcasting · keep this tab open</span>
         </div>
+      ) : (
+        <motion.div
+          initial={{ opacity: 0, scale: 0.92 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+          className="mb-3 inline-flex items-center gap-2 rounded-full border border-[#00ff88]/25 bg-[#00ff88]/[0.08] px-3 py-1"
+        >
+          <span className="grid h-3.5 w-3.5 place-items-center rounded-full bg-[#00ff88]">
+            <Icon name="Check" className="h-2.5 w-2.5 text-[#04040a]" strokeWidth={3} />
+          </span>
+          <span className="mono text-[10px] uppercase tracking-wider text-[#00ff88]">Live · share this link</span>
+        </motion.div>
       )}
 
       {/* Orb crystallizes here */}
@@ -72,12 +84,12 @@ export function ShareCard({ s }: { s: Controller }) {
       </motion.div>
 
       <h2 className="text-xl font-medium tracking-tight text-fg">
-        {isBeam ? "You are the signal tower" : COPY.transmissionReady}
+        {isBeam ? "You are the signal tower" : "Files are live in the Vault"}
       </h2>
       <p className="mt-1.5 max-w-xs text-balance text-sm text-fg-3">
         {isBeam
           ? "Anyone who opens this link connects to your device and starts downloading automatically."
-          : COPY.transmissionReadySub}
+          : "Share this link with anyone — they download instantly, no account needed."}
       </p>
 
       {/* Link block */}

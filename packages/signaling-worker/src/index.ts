@@ -73,6 +73,26 @@ export default {
       return cors(new Response(body, { status: r.status, headers: { "content-type": "application/json" } }));
     }
 
+    // Global Drop catalog — everyone on the internal team sees the same
+    // vault. We list all manifest objects in R2 and return them inline so the
+    // client gets the full state in one round-trip (the catalog is tiny —
+    // manifests are <64 KB each and capped to ~50 active drops anyway).
+    if (url.pathname === "/list" && request.method === "GET") {
+      const list = await env.DROPS.list({ prefix: "manifest/" });
+      const manifests = await Promise.all(
+        list.objects.map(async (obj) => {
+          try {
+            const m = await env.DROPS.get(obj.key);
+            if (!m) return null;
+            return JSON.parse(await m.text());
+          } catch {
+            return null;
+          }
+        }),
+      );
+      return cors(new Response(JSON.stringify({ drops: manifests.filter(Boolean) }), json()));
+    }
+
     // 1. Beam signaling (WebSocket → Durable Object)
     const beamMatch = url.pathname.match(/^\/beam\/([A-Za-z0-9_-]+)$/);
     if (beamMatch) {

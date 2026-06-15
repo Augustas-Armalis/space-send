@@ -15,7 +15,7 @@ import { CopyButton } from "@/components/ui/CopyButton";
 import { toast } from "@/components/ui/Toast";
 import { useTransfers, QUOTA } from "@/store/transfers";
 import type { DropRecord } from "@/transfer/types";
-import { purgeDrop } from "@/transfer/drop";
+import { purgeDrop, fetchAllDrops } from "@/transfer/drop";
 import { formatBytes, formatRelative, formatCountdown, pluralize } from "@/lib/format";
 import { fileIcon } from "@/lib/files";
 import { dropLink } from "@/lib/site";
@@ -266,7 +266,21 @@ function HeroStat({
 
 export default function VaultPage() {
   const hydrated = useTransfers((s) => s.hydrated);
-  const drops = useTransfers((s) => s.drops);
+  const localDrops = useTransfers((s) => s.drops);
+  const [cloudDrops, setCloudDrops] = useState<DropRecord[]>([]);
+  // Shared global vault — everyone sees the same R2 catalog. Local drops are
+  // only there to cover the offline / pre-publish window; cloud is canonical.
+  const drops = useMemo(() => {
+    const byId = new Map<string, DropRecord>();
+    cloudDrops.forEach((d) => byId.set(d.id, d));
+    // Local overlays the cloud copy (preserves trashedAt + downloads in this
+    // browser even if the cloud manifest doesn't carry them yet).
+    localDrops.forEach((d) => {
+      const remote = byId.get(d.id);
+      byId.set(d.id, remote ? { ...remote, ...d } : d);
+    });
+    return [...byId.values()];
+  }, [cloudDrops, localDrops]);
   const usedBytes = useTransfers((s) => s.usedBytes());
   const trashBytes = useTransfers((s) => s.trashBytes());
   const trashDrop = useTransfers((s) => s.trashDrop);
@@ -291,10 +305,16 @@ export default function VaultPage() {
     let cancelled = false;
     const refresh = async () => {
       try {
-        const res = await fetch(`${CLOUD_ORIGIN}/usage`, { cache: "no-store" });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!cancelled) setCloud({ bytes: data.bytes ?? 0, max: data.max ?? 0, drops: data.drops ?? 0 });
+        const [usageRes, drops] = await Promise.all([
+          fetch(`${CLOUD_ORIGIN}/usage`, { cache: "no-store" }),
+          fetchAllDrops(),
+        ]);
+        if (cancelled) return;
+        setCloudDrops(drops);
+        if (usageRes.ok) {
+          const data = await usageRes.json();
+          setCloud({ bytes: data.bytes ?? 0, max: data.max ?? 0, drops: data.drops ?? 0 });
+        }
       } catch {
         /* offline — keep last value */
       }
@@ -629,6 +649,10 @@ export default function VaultPage() {
                             // instant.
                             void purgeDrop(drop.id);
                             removeDrop(drop.id);
+                            // Drop is gone from local; also strip it from the
+                            // cloud catalog cache so it doesn't reappear on
+                            // re-render until the next /list refresh confirms.
+                            setCloudDrops((prev) => prev.filter((d) => d.id !== drop.id));
                             toast.warning("Deleted", "Files purged from storage.");
                           }}
                         >

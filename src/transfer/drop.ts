@@ -146,6 +146,21 @@ export async function fetchManifest(dropId: string): Promise<DropRecord | null> 
   }
 }
 
+/** Fetch the shared global Drop catalog from the Worker → R2. This is the
+ *  source of truth for Vault — everyone on the internal team sees the same
+ *  list because there are no per-user accounts. */
+export async function fetchAllDrops(): Promise<DropRecord[]> {
+  if (!CLOUD_ORIGIN) return [];
+  try {
+    const res = await fetch(`${CLOUD_ORIGIN}/list`, { cache: "no-store" });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { drops?: DropRecord[] };
+    return data.drops ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function getDropFile(dropId: string, fileId: string): Promise<Blob | undefined> {
   // Try local first — sender side, or recipient who already has it cached.
   const local = await getBlob(dropId, fileId);
