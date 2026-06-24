@@ -3,37 +3,41 @@ import type { BeamManifest, BeamRecipient, DataMsg, FileMeta, SignalMsg } from "
 import { sha256Hex } from "@/lib/hash";
 
 /* ============================================================================
-   The Beam engine — real WebRTC data-channel file transfer. The HOST device IS
-   the server: it keeps the selected File handles in memory and streams their
-   bytes peer-to-peer (DTLS-encrypted) to every viewer who opens the link. No
-   bytes touch any cloud — Cloudflare only relays the WebRTC handshake.
+   The Beam engine — a custom multi-lane WebRTC file transfer. The HOST device
+   IS the server: it keeps the selected File handles in memory and streams their
+   bytes peer-to-peer (DTLS-encrypted) to every viewer. No bytes touch any cloud.
 
-   • One host, many simultaneous viewers (a peer + data channel each).
-   • Host can add files at any time → manifest re-broadcasts to all viewers.
-   • Viewers SEE the file list and choose what to download. Large files stream
-     straight to disk via the File System Access API when available, so a 10 GB
-     transfer never has to fit in RAM.
+   What makes it fast:
+   • A control channel (ordered) carries JSON framing. N DATA channels
+     ("lanes", UNORDERED + reliable) carry the bytes. Unordered delivery means a
+     single lost/late packet never head-of-line-blocks the whole stream — a huge
+     win on Wi-Fi and mobile.
+   • Every binary chunk is offset-framed ([8-byte position][payload]) so the
+     receiver writes each chunk straight to its exact spot — order doesn't
+     matter, lanes run in parallel, and the receiver can write to disk directly.
+   • Because the control channel and data lanes are separate streams, "file-end"
+     can arrive before the last bytes — so completion is detected by
+     bytes-received == size, never by the control message alone.
+   • Overdrive cranks lanes + buffer + chunk size to trade RAM/CPU for speed.
    ========================================================================== */
 
-// Throughput tuning. The old 64 KB chunks + 8 MB buffer left the pipe starved.
-// We now send big chunks (clamped to the SCTP max-message-size per connection),
-// read the file in large blocks (one arrayBuffer() per 16 MB instead of per
-// chunk), and keep up to 64 MB in flight before pausing. On a fast LAN/Wi-Fi
-// this is several times faster.
-const TARGET_CHUNK = 256 * 1024;       // desired per-message size (clamped below)
-const HIGH_WATER = 64 * 1024 * 1024;   // keep up to 64 MB buffered before pausing
-const LOW_WATER = 16 * 1024 * 1024;    // resume once it drains under 16 MB
+const TARGET_CHUNK = 256 * 1024;       // payload size per message (clamped to maxMessageSize)
+const HIGH_WATER = 64 * 1024 * 1024;   // total in-flight buffer before pausing
 const READ_BLOCK = 16 * 1024 * 1024;   // read the file 16 MB at a time
 const STREAM_TO_DISK_MIN = 64 * 1024 * 1024; // use the save-picker for files ≥ 64 MB
+// A few unordered lanes avoid per-stream send stalls without flooding the
+// single SCTP association (which shares one congestion window — more lanes past
+// a handful just add overhead, as measured). The real throughput/robustness win
+// is the UNORDERED + offset-framed delivery, which kills head-of-line blocking.
+const NORMAL_LANES = 4;
+const TURBO_LANES = 4; // keep lanes constant — extra lanes measured slower
+const HEADER = 8; // bytes of offset header prefixing each binary chunk
 
-// Overdrive ("turbo"): spend more RAM/CPU to keep the pipe maximally saturated.
-// Bigger in-flight buffer + bigger reads + the largest chunk the SCTP transport
-// allows (Firefox negotiates large maxMessageSize, so it can send 1 MB chunks;
-// Chrome stays clamped to its 256 KB ceiling automatically). Best on fast/local
-// links where JS pumping, not the network, is the bottleneck.
-const TURBO_CHUNK = 1024 * 1024;            // 1 MB target (clamped to maxMessageSize)
-const TURBO_HIGH_WATER = 256 * 1024 * 1024; // up to 256 MB buffered
-const TURBO_READ_BLOCK = 64 * 1024 * 1024;  // read 64 MB at a time
+// Overdrive cranks the in-flight buffer, read size, and (where the browser
+// allows large messages, e.g. Firefox) the chunk size — it never adds lanes.
+const TURBO_CHUNK = 1024 * 1024;
+const TURBO_HIGH_WATER = 128 * 1024 * 1024;
+const TURBO_READ_BLOCK = 32 * 1024 * 1024;
 
 export interface HostFile {
   meta: FileMeta;
@@ -61,7 +65,8 @@ export interface HostCallbacks {
 
 interface PeerState {
   pc: RTCPeerConnection;
-  channel?: RTCDataChannel;
+  ctrl: RTCDataChannel;
+  lanes: RTCDataChannel[];
   recipient: BeamRecipient;
   lastBytes: number;
   lastTime: number;
@@ -79,6 +84,20 @@ function regionFromGeo(geo?: { country?: string; city?: string }): string | unde
   if (!geo) return undefined;
   if (geo.city && geo.country) return `${geo.city}, ${geo.country}`;
   return geo.country || geo.city || undefined;
+}
+
+function waitOpen(ch: RTCDataChannel, timeoutMs = 8000): Promise<boolean> {
+  if (ch.readyState === "open") return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = (v: boolean) => {
+      ch.removeEventListener("open", onOpen);
+      clearTimeout(t);
+      resolve(v);
+    };
+    const onOpen = () => done(true);
+    ch.addEventListener("open", onOpen);
+    const t = setTimeout(() => done(ch.readyState === "open"), timeoutMs);
+  });
 }
 
 export class BeamHost {
@@ -102,7 +121,6 @@ export class BeamHost {
     this.startSpeedLoop();
   }
 
-  /** Add files to a live Beam and push the new manifest to every viewer. */
   addFiles(more: HostFile[]) {
     this.files.push(...more);
     this.manifest = {
@@ -111,7 +129,7 @@ export class BeamHost {
       totalSize: this.files.reduce((a, f) => a + f.meta.size, 0),
     };
     this.peers.forEach((p) => {
-      if (p.channel && p.channel.readyState === "open") this.sendCtrl(p.channel, { t: "manifest", manifest: this.manifest });
+      if (p.ctrl.readyState === "open") this.sendCtrl(p.ctrl, { t: "manifest", manifest: this.manifest });
     });
   }
 
@@ -119,7 +137,8 @@ export class BeamHost {
     return this.files.length;
   }
 
-  /** Overdrive: spend more memory/CPU to push max throughput. */
+  /** Overdrive: more lanes + buffer + chunk size. Lanes apply to peers that
+   *  connect after the toggle; buffer/chunk apply live. */
   setTurbo(on: boolean) {
     this.turbo = on;
   }
@@ -132,7 +151,8 @@ export class BeamHost {
     const p = this.peers.get(recipientId);
     if (p) {
       try {
-        p.channel?.close();
+        p.ctrl.close();
+        p.lanes.forEach((l) => l.close());
         p.pc.close();
       } catch {
         /* noop */
@@ -166,8 +186,20 @@ export class BeamHost {
   private async createPeer(remoteId: string, region?: string) {
     if (this.peers.has(remoteId)) return;
     const pc = new RTCPeerConnection(ICE_CONFIG);
-    const channel = pc.createDataChannel("beam", { ordered: true });
-    channel.binaryType = "arraybuffer";
+
+    // Control channel (ordered, reliable) for JSON framing.
+    const ctrl = pc.createDataChannel("ctrl", { ordered: true });
+    ctrl.binaryType = "arraybuffer";
+
+    // Data lanes (unordered, reliable) — created BEFORE the offer so they ride
+    // the initial SDP with no renegotiation.
+    const laneCount = this.turbo ? TURBO_LANES : NORMAL_LANES;
+    const lanes: RTCDataChannel[] = [];
+    for (let i = 0; i < laneCount; i++) {
+      const dc = pc.createDataChannel(`data-${i}`, { ordered: false });
+      dc.binaryType = "arraybuffer";
+      lanes.push(dc);
+    }
 
     const recipient: BeamRecipient = {
       id: remoteId,
@@ -178,7 +210,7 @@ export class BeamHost {
       status: "reading",
       startedAt: Date.now(),
     };
-    const state: PeerState = { pc, channel, recipient, lastBytes: 0, lastTime: Date.now() };
+    const state: PeerState = { pc, ctrl, lanes, recipient, lastBytes: 0, lastTime: Date.now() };
     this.peers.set(remoteId, state);
     this.cb.onRecipientJoin?.(recipient);
 
@@ -191,11 +223,11 @@ export class BeamHost {
         this.cb.onRecipientUpdate?.(remoteId, { status: "disconnected" });
       }
     };
-    channel.onopen = () => {
+    ctrl.onopen = () => {
       this.cb.onSpark?.(remoteId);
-      this.sendCtrl(channel, { t: "manifest", manifest: this.manifest });
+      this.sendCtrl(ctrl, { t: "manifest", manifest: this.manifest });
     };
-    channel.onmessage = (e) => this.onChannelMsg(remoteId, e.data);
+    ctrl.onmessage = (e) => this.onChannelMsg(remoteId, e.data);
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -245,37 +277,51 @@ export class BeamHost {
 
   private async streamTo(remoteId: string, fileIds: string[]) {
     const p = this.peers.get(remoteId);
-    if (!p || !p.channel) return;
-    const channel = p.channel;
-    channel.bufferedAmountLowThreshold = LOW_WATER;
-    // Send the largest message the SCTP transport allows (clamped to our
-    // target). Bigger messages = far less per-chunk overhead. Overdrive raises
-    // the in-flight buffer, the read-block size, and the chunk target.
+    if (!p) return;
+    // Wait for the data lanes to open, then stream across the open ones.
+    await Promise.all(p.lanes.map((l) => waitOpen(l)));
+    const lanes = p.lanes.filter((l) => l.readyState === "open");
+    if (lanes.length === 0) return;
+
     const maxMsg = (p.pc.sctp?.maxMessageSize as number | undefined) || TARGET_CHUNK;
     const chunkTarget = this.turbo ? TURBO_CHUNK : TARGET_CHUNK;
     const highWater = this.turbo ? TURBO_HIGH_WATER : HIGH_WATER;
     const readBlock = this.turbo ? TURBO_READ_BLOCK : READ_BLOCK;
-    const chunkSize = Math.max(16 * 1024, Math.min(chunkTarget, maxMsg));
+    // Payload must leave room for the 8-byte header within the max message size.
+    const payloadSize = Math.max(16 * 1024, Math.min(chunkTarget, maxMsg - HEADER));
+    const perLaneHigh = Math.max(1 * 1024 * 1024, Math.floor(highWater / lanes.length));
+    lanes.forEach((l) => (l.bufferedAmountLowThreshold = Math.floor(perLaneHigh / 2)));
+
     const wanted = this.files.filter((f) => fileIds.includes(f.meta.id));
 
     for (const { meta, file } of wanted) {
-      if (this.closed || channel.readyState !== "open") return;
-      this.sendCtrl(channel, { t: "file-begin", id: meta.id, name: meta.name, size: meta.size, mime: meta.mime });
+      if (this.closed) return;
+      this.sendCtrl(p.ctrl, { t: "file-begin", id: meta.id, name: meta.name, size: meta.size, mime: meta.mime });
       let offset = 0;
+      let laneIdx = 0;
       let lastThrottleTs = Date.now();
       let sentSinceThrottle = 0;
-      // Read the file one big block at a time, then fire many large chunks from
-      // that in-memory block with no per-chunk await for disk I/O.
+
       while (offset < file.size) {
-        if (this.closed || channel.readyState !== "open") return;
+        if (this.closed) return;
         const block = await file.slice(offset, Math.min(offset + readBlock, file.size)).arrayBuffer();
         let bp = 0;
         while (bp < block.byteLength) {
-          if (this.closed || channel.readyState !== "open") return;
-          const buf = block.slice(bp, Math.min(bp + chunkSize, block.byteLength));
-          if (channel.bufferedAmount > highWater) await this.waitDrain(channel);
+          if (this.closed) return;
+          const payloadLen = Math.min(payloadSize, block.byteLength - bp);
+          const absOffset = offset + bp;
+          // Frame: [8-byte Float64 offset][payload]. Float64 is exact to 2^53
+          // bytes (~9 PB) — far beyond any real file.
+          const framed = new Uint8Array(HEADER + payloadLen);
+          new DataView(framed.buffer).setFloat64(0, absOffset);
+          framed.set(new Uint8Array(block, bp, payloadLen), HEADER);
+
+          const lane = lanes[laneIdx % lanes.length];
+          if (lane.readyState !== "open") return;
+          if (lane.bufferedAmount > perLaneHigh) await this.waitDrain(lane);
+
           if (this.throttle > 0) {
-            sentSinceThrottle += buf.byteLength;
+            sentSinceThrottle += payloadLen;
             const elapsed = (Date.now() - lastThrottleTs) / 1000;
             const allowed = this.throttle * elapsed;
             if (sentSinceThrottle > allowed) {
@@ -287,16 +333,22 @@ export class BeamHost {
               sentSinceThrottle = 0;
             }
           }
+
           try {
-            channel.send(buf);
+            lane.send(framed);
           } catch {
             return;
           }
-          bp += buf.byteLength;
-          offset += buf.byteLength;
+          bp += payloadLen;
+          laneIdx++;
         }
+        offset += block.byteLength;
       }
-      this.sendCtrl(channel, { t: "file-end", id: meta.id, hash: meta.hash });
+
+      // Drain every lane before announcing the end, so the file-end (on the
+      // separate ordered control channel) doesn't beat the last bytes out.
+      await Promise.all(lanes.map((l) => this.drainFully(l)));
+      this.sendCtrl(p.ctrl, { t: "file-end", id: meta.id, hash: meta.hash });
     }
   }
 
@@ -310,6 +362,16 @@ export class BeamHost {
     });
   }
 
+  private drainFully(channel: RTCDataChannel): Promise<void> {
+    return new Promise((resolve) => {
+      const check = () => {
+        if (this.closed || channel.readyState !== "open" || channel.bufferedAmount === 0) return resolve();
+        setTimeout(check, 30);
+      };
+      check();
+    });
+  }
+
   private startSpeedLoop() {
     const tick = () => {
       if (this.closed) return;
@@ -319,13 +381,13 @@ export class BeamHost {
       let completed = 0;
       let bufferedBytes = 0;
       this.peers.forEach((p) => {
-        if (p.channel && p.channel.readyState === "open") connected += 1;
+        if (p.ctrl.readyState === "open") connected += 1;
         if (p.recipient.status === "extracting") {
           active += 1;
           agg += p.recipient.speed;
         }
         if (p.recipient.status === "complete") completed += 1;
-        if (p.channel) bufferedBytes += p.channel.bufferedAmount;
+        p.lanes.forEach((l) => (bufferedBytes += l.bufferedAmount));
         p.pc.getStats?.().then((stats) => {
           stats.forEach((report) => {
             if (report.type === "candidate-pair" && report.state === "succeeded" && report.currentRoundTripTime != null) {
@@ -354,7 +416,8 @@ export class BeamHost {
     this.sig.send({ kind: "bye", beam: this.beamId, from: this.selfId });
     this.peers.forEach((p) => {
       try {
-        p.channel?.close();
+        p.ctrl.close();
+        p.lanes.forEach((l) => l.close());
         p.pc.close();
       } catch {
         /* noop */
@@ -380,26 +443,27 @@ export interface ReceiverCallbacks {
   onHostGone?: () => void;
 }
 
-/** A place to put incoming bytes for one file — either a streaming disk writer
- *  (File System Access API) or an in-memory chunk buffer that becomes a Blob. */
+/** A seekable place to put incoming bytes — a streaming disk writer (File
+ *  System Access API) or an in-memory buffer that becomes a Blob. Chunks can
+ *  arrive out of order, so every write is positioned. */
 interface Sink {
-  write(chunk: Uint8Array): Promise<void> | void;
+  writeAt(offset: number, chunk: Uint8Array): Promise<void> | void;
   finish(): Promise<Blob | null>;
   abort(): void;
-  hash: boolean; // whether we can hash (only the in-memory path verifies)
+  hash: boolean;
 }
 
-function makeBlobSink(mime: string): Sink {
-  const chunks: Uint8Array[] = [];
+function makeBlobSink(mime: string, size: number): Sink {
+  const buf = new Uint8Array(size);
   return {
-    write(chunk) {
-      chunks.push(chunk);
+    writeAt(offset, chunk) {
+      buf.set(chunk, offset);
     },
     async finish() {
-      return new Blob(chunks as BlobPart[], { type: mime });
+      return new Blob([buf], { type: mime });
     },
     abort() {
-      chunks.length = 0;
+      /* buffer is GC'd with the sink */
     },
     hash: true,
   };
@@ -409,15 +473,17 @@ async function makeDiskSink(name: string): Promise<Sink | null> {
   const picker = (window as unknown as { showSaveFilePicker?: (o: unknown) => Promise<unknown> }).showSaveFilePicker;
   if (!picker) return null;
   try {
-    const handle = (await picker({ suggestedName: name })) as { createWritable: () => Promise<{ write: (d: unknown) => Promise<void>; close: () => Promise<void>; abort?: () => Promise<void> }> };
+    const handle = (await picker({ suggestedName: name })) as {
+      createWritable: () => Promise<{ write: (d: unknown) => Promise<void>; close: () => Promise<void>; abort?: () => Promise<void> }>;
+    };
     const writable = await handle.createWritable();
     return {
-      async write(chunk) {
-        await writable.write(chunk);
+      async writeAt(offset, chunk) {
+        await writable.write({ type: "write", position: offset, data: chunk });
       },
       async finish() {
         await writable.close();
-        return null; // already written to disk
+        return null;
       },
       abort() {
         void writable.abort?.();
@@ -425,7 +491,7 @@ async function makeDiskSink(name: string): Promise<Sink | null> {
       hash: false,
     };
   } catch {
-    return null; // user cancelled the picker
+    return null;
   }
 }
 
@@ -434,14 +500,17 @@ interface ActiveDownload {
   size: number;
   received: number;
   sink: Sink;
-  onEnd: (hash?: string) => void;
+  expectedHash?: string;
+  ended: boolean;
+  finished: boolean;
+  onDone: () => void;
   reject: (e: Error) => void;
 }
 
 export class BeamReceiver {
   private sig: Signaling;
   private pc: RTCPeerConnection;
-  private channel: RTCDataChannel | null = null;
+  private ctrl: RTCDataChannel | null = null;
   private manifest: BeamManifest | null = null;
   private hostId: string | null = null;
   private closed = false;
@@ -453,6 +522,7 @@ export class BeamReceiver {
   private lastBytes = 0;
   private lastTime = Date.now();
   private emaSpeed = 0;
+  private lastProgressSent = 0;
 
   constructor(
     private beamId: string,
@@ -477,19 +547,25 @@ export class BeamReceiver {
         this.sig.send({ kind: "ice", beam: this.beamId, from: this.selfId, to: this.hostId, candidate: e.candidate.toJSON() });
     };
     this.pc.ondatachannel = (e) => {
-      this.channel = e.channel;
-      this.channel.binaryType = "arraybuffer";
-      this.channel.onopen = () => {
-        this.connected = true;
-        this.cb.onConnected?.();
-      };
-      this.channel.onmessage = (ev) => this.onData(ev.data);
-      this.channel.onclose = () => {
-        if (this.active) {
-          this.active.reject(new Error("Connection closed mid-transfer"));
-          this.active = null;
-        }
-      };
+      const ch = e.channel;
+      ch.binaryType = "arraybuffer";
+      if (ch.label === "ctrl") {
+        this.ctrl = ch;
+        ch.onopen = () => {
+          this.connected = true;
+          this.cb.onConnected?.();
+        };
+        ch.onmessage = (ev) => this.onCtrl(ev.data);
+        ch.onclose = () => {
+          if (this.active && !this.active.finished) {
+            this.active.reject(new Error("Connection closed mid-transfer"));
+            this.active = null;
+          }
+        };
+      } else {
+        // A data lane.
+        ch.onmessage = (ev) => this.onBinary(ev.data);
+      }
     };
     this.pc.onconnectionstatechange = () => {
       if (this.pc.connectionState === "failed") this.cb.onError?.(new Error("Beam connection failed"));
@@ -520,25 +596,27 @@ export class BeamReceiver {
   }
 
   private send(msg: DataMsg) {
-    if (this.channel && this.channel.readyState === "open") {
+    if (this.ctrl && this.ctrl.readyState === "open") {
       try {
-        this.channel.send(JSON.stringify(msg));
+        this.ctrl.send(JSON.stringify(msg));
       } catch {
         /* noop */
       }
     }
   }
 
-  /** Download one file. Opens a disk writer (large files) or builds a Blob.
-   *  MUST be called from a user gesture so the save-picker is allowed. */
-  async download(file: { id: string; name: string; size: number; mime: string; hash?: string }): Promise<void> {
-    // Pick the sink up-front (inside the click gesture) before queueing.
+  /** Download one file. opts.save=false skips the browser save (used by the
+   *  in-page self-test). MUST be called from a user gesture for the picker. */
+  async download(
+    file: { id: string; name: string; size: number; mime: string; hash?: string },
+    opts: { save?: boolean } = {},
+  ): Promise<void> {
+    const save = opts.save !== false;
     let sink: Sink | null = null;
-    if (file.size >= STREAM_TO_DISK_MIN) sink = await makeDiskSink(file.name);
-    if (!sink) sink = makeBlobSink(file.mime);
+    if (save && file.size >= STREAM_TO_DISK_MIN) sink = await makeDiskSink(file.name);
+    if (!sink) sink = makeBlobSink(file.mime, file.size);
     const chosen = sink;
 
-    let expectedHash: string | undefined;
     await new Promise<void>((resolve, reject) => {
       const start = () => {
         this.active = {
@@ -546,10 +624,9 @@ export class BeamReceiver {
           size: file.size,
           received: 0,
           sink: chosen,
-          onEnd: (h) => {
-            expectedHash = h;
-            resolve();
-          },
+          ended: false,
+          finished: false,
+          onDone: resolve,
           reject,
         };
         this.lastBytes = 0;
@@ -557,7 +634,6 @@ export class BeamReceiver {
         this.emaSpeed = 0;
         this.send({ t: "extract", fileIds: [file.id] });
       };
-      // Serialize: one active download at a time so chunk framing stays clean.
       if (this.active) this.queue.push(start);
       else start();
     }).finally(() => {
@@ -566,60 +642,76 @@ export class BeamReceiver {
     });
 
     // Finalize: disk sinks return null (already on disk); blob sinks return a
-    // Blob we verify (if a hash was sent) and hand to the browser to save.
+    // Blob we verify (if a hash was sent) and optionally hand to the browser.
     const blob = await chosen.finish();
     let verified = true;
     if (blob) {
-      if (expectedHash) {
+      if (file.hash) {
         try {
-          verified = (await sha256Hex(await blob.arrayBuffer())) === expectedHash;
+          verified = (await sha256Hex(await blob.arrayBuffer())) === file.hash;
         } catch {
           verified = false;
         }
       }
-      triggerDownload(blob, file.name);
+      if (save) triggerDownload(blob, file.name);
     }
     this.cb.onFileComplete?.(file.id, verified);
   }
 
-  private onData(data: unknown) {
-    if (typeof data === "string") {
-      let msg: DataMsg;
-      try {
-        msg = JSON.parse(data) as DataMsg;
-      } catch {
-        return;
-      }
-      if (msg.t === "manifest") {
-        this.manifest = msg.manifest;
-        this.cb.onManifest?.(msg.manifest);
-      } else if (msg.t === "file-end") {
-        const a = this.active;
-        if (a) {
-          this.active = null;
-          a.onEnd(msg.hash); // resolves the download() promise; finalize happens there
-        }
-      } else if (msg.t === "signal") {
-        this.cb.onSignal?.(msg.bars);
-      }
-      // file-begin is implicit — the active download is already set up.
+  private onCtrl(data: unknown) {
+    if (typeof data !== "string") return;
+    let msg: DataMsg;
+    try {
+      msg = JSON.parse(data) as DataMsg;
+    } catch {
       return;
     }
-    if (!this.active) return;
-    const buf = data instanceof ArrayBuffer ? new Uint8Array(data) : null;
-    if (!buf) return;
-    void this.active.sink.write(buf);
-    this.active.received += buf.byteLength;
-    this.cb.onFileProgress?.(this.active.fileId, this.active.received, this.active.size, this.instSpeed(this.active.received));
-    // Report progress back to the host at most ~5×/sec, not per chunk — at high
-    // speed a per-chunk reverse message would clog the channel and slow things.
+    if (msg.t === "manifest") {
+      this.manifest = msg.manifest;
+      this.cb.onManifest?.(msg.manifest);
+    } else if (msg.t === "file-end") {
+      const a = this.active;
+      if (a) {
+        a.expectedHash = msg.hash;
+        a.ended = true;
+        this.maybeFinish();
+      }
+    } else if (msg.t === "signal") {
+      this.cb.onSignal?.(msg.bars);
+    }
+  }
+
+  private onBinary(data: unknown) {
+    const a = this.active;
+    if (!a) return;
+    const ab = data instanceof ArrayBuffer ? data : null;
+    if (!ab || ab.byteLength <= HEADER) return;
+    const offset = new DataView(ab).getFloat64(0);
+    const payload = new Uint8Array(ab, HEADER);
+    void a.sink.writeAt(offset, payload);
+    a.received += payload.byteLength;
+
+    this.cb.onFileProgress?.(a.fileId, a.received, a.size, this.instSpeed(a.received));
     const now = Date.now();
     if (now - this.lastProgressSent > 200) {
       this.lastProgressSent = now;
-      this.send({ t: "progress", id: this.active.fileId, received: this.active.received });
+      this.send({ t: "progress", id: a.fileId, received: a.received });
     }
+    // Completion is driven by bytes received, not the control message — the
+    // file-end can arrive before the last bytes (separate streams).
+    if (a.received >= a.size) this.maybeFinish();
   }
-  private lastProgressSent = 0;
+
+  /** Finish once all bytes are in. Idempotent. */
+  private maybeFinish() {
+    const a = this.active;
+    if (!a || a.finished) return;
+    if (a.received < a.size) return;
+    a.finished = true;
+    this.active = null;
+    this.send({ t: "progress", id: a.fileId, received: a.size });
+    a.onDone();
+  }
 
   private instSpeed(received: number): number {
     const now = Date.now();
@@ -634,9 +726,9 @@ export class BeamReceiver {
 
   close() {
     this.closed = true;
-    if (this.active) this.active.sink.abort();
+    if (this.active && !this.active.finished) this.active.sink.abort();
     try {
-      this.channel?.close();
+      this.ctrl?.close();
       this.pc.close();
     } catch {
       /* noop */

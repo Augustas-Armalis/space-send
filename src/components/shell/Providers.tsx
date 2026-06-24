@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { Starfield } from "@/components/brand/Starfield";
 import { AuroraRibbon } from "@/components/brand/AuroraRibbon";
 import { CompleteFlash } from "@/components/ui/CompleteFlash";
@@ -14,6 +15,14 @@ export function Providers({ children }: { children: React.ReactNode }) {
   const auroraActive = useUI((s) => s.auroraActive);
   const auroraIntensity = useUI((s) => s.auroraIntensity);
   const completeKey = useUI((s) => s.completeKey);
+
+  // Dev-only: expose the Beam loopback throughput test on window.
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    void import("@/transfer/beamSelfTest").then((m) => {
+      (window as unknown as { __beamSelfTest?: unknown }).__beamSelfTest = m.beamSelfTest;
+    });
+  }, []);
 
   return (
     <>
